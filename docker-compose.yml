@@ -2,6 +2,15 @@ services:
   backend:
     build: .
     container_name: openshorts-backend
+    user: "1000:1000"
+    environment:
+      - HOME=/tmp
+      - USER=appuser
+      - LOGNAME=appuser
+      - MPLCONFIGDIR=/tmp/matplotlib
+      - YOLO_CONFIG_DIR=/tmp/ultralytics
+      - XDG_CACHE_HOME=/tmp/cache
+      - PYTHONDONTWRITEBYTECODE=1
     ports:
       - "8000:8000"
     volumes:

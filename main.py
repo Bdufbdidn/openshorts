@@ -12,7 +12,7 @@ import torch
 import os
 import numpy as np
 from tqdm import tqdm
-import yt_dlp
+import httpx
 import mediapipe as mp
 # import whisper (replaced by faster_whisper inside function)
 from google import genai
@@ -347,17 +347,17 @@ def create_general_frame(frame, output_width, output_height):
     bg_scale = output_height / orig_h
     bg_w = int(orig_w * bg_scale)
     bg_resized = cv2.resize(frame, (bg_w, output_height))
-    
+
     # Crop center of background
     start_x = (bg_w - output_width) // 2
     if start_x < 0: start_x = 0
     background = bg_resized[:, start_x:start_x+output_width]
     if background.shape[1] != output_width:
         background = cv2.resize(background, (output_width, output_height))
-        
+
     # Blur background
     background = cv2.GaussianBlur(background, (51, 51), 0)
-    
+
     # 2. Foreground (Fit Width)
     scale = output_width / orig_w
     fg_h = int(orig_h * scale)
@@ -449,134 +449,141 @@ def sanitize_filename(filename):
     return filename[:100]
 
 
+_YT_ID_RE = re.compile(r"(?:v=|/shorts/|/embed/|youtu\.be/)([0-9A-Za-z_-]{11})")
+
+
+def _extract_youtube_id(url):
+    if re.fullmatch(r"[0-9A-Za-z_-]{11}", url):
+        return url
+    m = _YT_ID_RE.search(url)
+    if not m:
+        raise ValueError(f"Could not extract YouTube video ID from URL: {url}")
+    return m.group(1)
+
+
+def _stream_download(url, output_path, timeout=600):
+    print(f"   → streaming to {output_path}", flush=True)
+    total = 0
+    last_report = time.time()
+    with httpx.stream("GET", url, follow_redirects=True, timeout=timeout) as r:
+        print(f"   → HTTP {r.status_code}, content-length={r.headers.get('content-length','?')}", flush=True)
+        r.raise_for_status()
+        with open(output_path, "wb") as f:
+            for chunk in r.iter_bytes(chunk_size=1024 * 1024):
+                f.write(chunk)
+                total += len(chunk)
+                now = time.time()
+                if now - last_report >= 3:
+                    print(f"   → {total/(1024*1024):.1f} MB downloaded", flush=True)
+                    last_report = now
+    print(f"   → done: {total/(1024*1024):.1f} MB", flush=True)
+
+
+_YOUTUBE_MP41_HOST = "youtube-mp41.p.rapidapi.com"
+_YOUTUBE_MP41_QUALITY = "1080"
+_YOUTUBE_MP41_POLL_INTERVAL = 2.0
+_YOUTUBE_MP41_POLL_TIMEOUT = 1800.0
+
+
 def download_youtube_video(url, output_dir="."):
     """
-    Downloads a YouTube video using yt-dlp.
-    Returns the path to the downloaded video and the video title.
+    Downloads a YouTube video via the youtube-mp41 RapidAPI, which runs the
+    conversion on its own infrastructure and serves the finished MP4 from its
+    own CDN (so the download URL is not an IP-bound googlevideo.com link).
+    Returns (path_to_mp4, sanitized_title).
     """
-    print(f"🔍 Debug: yt-dlp version: {yt_dlp.version.__version__}")
-    print("📥 Downloading video from YouTube...")
+    try:
+        return _download_youtube_video_impl(url, output_dir)
+    except Exception:
+        import traceback
+        print("❌ download_youtube_video failed — full traceback below:", flush=True)
+        traceback.print_exc()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        raise
+
+
+def _download_youtube_video_impl(url, output_dir="."):
+    print("📥 Downloading video via RapidAPI (youtube-mp41)...", flush=True)
     step_start_time = time.time()
 
-    cookies_path = '/app/cookies.txt'
-    cookies_env = os.environ.get("YOUTUBE_COOKIES")
-    if cookies_env:
-        print("🍪 Found YOUTUBE_COOKIES env var, creating cookies file inside container...")
-        try:
-            with open(cookies_path, 'w') as f:
-                f.write(cookies_env)
-            if os.path.exists(cookies_path):
-                 print(f"   Debug: Cookies file created. Size: {os.path.getsize(cookies_path)} bytes")
-                 with open(cookies_path, 'r') as f:
-                     content = f.read(100)
-                     print(f"   Debug: First 100 chars of cookie file: {content}")
-        except Exception as e:
-            print(f"⚠️ Failed to write cookies file: {e}")
-            cookies_path = None
-    else:
-        cookies_path = None
-        print("⚠️ YOUTUBE_COOKIES env var not found.")
-    
-    # Common yt-dlp options to work around YouTube bot detection.
-    # extractor_args tries multiple player clients in order; tv_embed / android
-    # avoid the OAuth/PO-token checks that block server IPs.
-    _COMMON_YDL_OPTS = {
-        'quiet': False,
-        'verbose': True,
-        'no_warnings': False,
-        'cookiefile': cookies_path if cookies_path else None,
-        'socket_timeout': 30,
-        'retries': 10,
-        'fragment_retries': 10,
-        'nocheckcertificate': True,
-        'cachedir': False,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['tv_embed', 'android', 'mweb', 'web'],
-                'player_skip': ['webpage', 'configs'],
-            }
-        },
-        'http_headers': {
-            'User-Agent': (
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) '
-                'Chrome/120.0.0.0 Safari/537.36'
-            ),
-        },
+    api_key = os.environ.get("RAPIDAPI_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "RAPIDAPI_KEY environment variable is not set. "
+            "Add it to your .env file (see .env.example)."
+        )
+
+    video_id = _extract_youtube_id(url)
+    headers = {
+        "x-rapidapi-key": api_key,
+        "x-rapidapi-host": _YOUTUBE_MP41_HOST,
     }
 
-    with yt_dlp.YoutubeDL(_COMMON_YDL_OPTS) as ydl:
-        try:
-            info = ydl.extract_info(url, download=False)
-            video_title = info.get('title', 'youtube_video')
-            sanitized_title = sanitize_filename(video_title)
-        except Exception as e:
-            # Force print to stderr/stdout immediately so it's captured before crash
-            import sys
-            import traceback
-            
-            # Print minimal error first to ensure something gets out
-            print("🚨 YOUTUBE DOWNLOAD ERROR 🚨", file=sys.stderr)
-            
-            error_msg = f"""
-            
-❌ ================================================================= ❌
-❌ FATAL ERROR: YOUTUBE DOWNLOAD FAILED
-❌ ================================================================= ❌
-            
-REASON: YouTube has blocked the download request (Error 429/Unavailable).
-        This is likely a temporary IP ban on this server.
+    with httpx.Client(timeout=30.0, headers=headers) as client:
+        start_resp = client.get(
+            f"https://{_YOUTUBE_MP41_HOST}/api/v1/download",
+            params={"id": video_id, "format": _YOUTUBE_MP41_QUALITY},
+        )
+        start_resp.raise_for_status()
+        start_data = start_resp.json()
 
-👇 SOLUTION FOR USER 👇
----------------------------------------------------------------------
-1. Download the video manually to your computer.
-2. Use the 'Upload Video' tab in this app to process it.
----------------------------------------------------------------------
+        if not start_data.get("success") or not start_data.get("progressId"):
+            raise RuntimeError(
+                f"youtube-mp41 did not return a progressId: {str(start_data)[:300]}"
+            )
 
-Technical Details: {str(e)}
-            """
-            # Print to both streams to ensure capture
-            print(error_msg, file=sys.stdout)
-            print(error_msg, file=sys.stderr)
-            
-            # Force flush
-            sys.stdout.flush()
-            sys.stderr.flush()
-            
-            # Wait a split second to allow buffer to drain before raising
-            time.sleep(0.5)
-            
-            raise e
-    
-    output_template = os.path.join(output_dir, f'{sanitized_title}.%(ext)s')
-    expected_file = os.path.join(output_dir, f'{sanitized_title}.mp4')
-    if os.path.exists(expected_file):
-        os.remove(expected_file)
-        print(f"🗑️  Removed existing file to re-download with H.264 codec")
-    
-    ydl_opts = {
-        **_COMMON_YDL_OPTS,
-        'format': 'bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1]+bestaudio/best[ext=mp4]/best',
-        'outtmpl': output_template,
-        'merge_output_format': 'mp4',
-        'overwrites': True,
-    }
-    
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
-    
-    downloaded_file = os.path.join(output_dir, f'{sanitized_title}.mp4')
-    
-    if not os.path.exists(downloaded_file):
-        for f in os.listdir(output_dir):
-            if f.startswith(sanitized_title) and f.endswith('.mp4'):
-                downloaded_file = os.path.join(output_dir, f)
+        video_title = start_data.get("title") or "youtube_video"
+        progress_id = start_data["progressId"]
+        print(
+            f"🎞️  job started: progressId={progress_id} "
+            f"title={video_title!r} quality={_YOUTUBE_MP41_QUALITY}p",
+            flush=True,
+        )
+
+        poll_deadline = time.time() + _YOUTUBE_MP41_POLL_TIMEOUT
+        last_status_line = None
+        download_url = None
+        while True:
+            p_resp = client.get(
+                f"https://{_YOUTUBE_MP41_HOST}/api/v1/progress",
+                params={"id": progress_id},
+            )
+            p_resp.raise_for_status()
+            p_data = p_resp.json()
+
+            status = p_data.get("status", "?")
+            progress = p_data.get("progress", 0)
+            status_line = f"{status} ({progress}/1000)"
+            if status_line != last_status_line:
+                print(f"   → {status_line}", flush=True)
+                last_status_line = status_line
+
+            if p_data.get("finished") and p_data.get("downloadUrl"):
+                download_url = p_data["downloadUrl"]
                 break
-    
+
+            if time.time() > poll_deadline:
+                raise RuntimeError(
+                    f"youtube-mp41 job timed out after "
+                    f"{_YOUTUBE_MP41_POLL_TIMEOUT:.0f}s at {status_line}"
+                )
+            time.sleep(_YOUTUBE_MP41_POLL_INTERVAL)
+
+    sanitized_title = sanitize_filename(video_title)
+    final_output = os.path.join(output_dir, f"{sanitized_title}.mp4")
+    if os.path.exists(final_output):
+        os.remove(final_output)
+
+    print("📥 Fetching finished MP4 from vendor CDN...", flush=True)
+    _stream_download(download_url, final_output)
+
     step_end_time = time.time()
-    print(f"✅ Video downloaded in {step_end_time - step_start_time:.2f}s: {downloaded_file}")
-    
-    return downloaded_file, sanitized_title
+    print(
+        f"✅ Video downloaded in {step_end_time - step_start_time:.2f}s: {final_output}",
+        flush=True,
+    )
+    return final_output, sanitized_title
 
 def process_video_to_vertical(input_video, final_output_video):
     """
@@ -611,8 +618,8 @@ def process_video_to_vertical(input_video, final_output_video):
 
     print("\n   🧠 Step 2: Preparing Active Tracking...")
     original_width, original_height = get_video_resolution(input_video)
-    
-    OUTPUT_HEIGHT = original_height
+
+    OUTPUT_HEIGHT = 1920
     OUTPUT_WIDTH = int(OUTPUT_HEIGHT * ASPECT_RATIO)
     if OUTPUT_WIDTH % 2 != 0:
         OUTPUT_WIDTH += 1
@@ -631,7 +638,7 @@ def process_video_to_vertical(input_video, final_output_video):
         'ffmpeg', '-y', '-f', 'rawvideo', '-vcodec', 'rawvideo',
         '-s', f'{OUTPUT_WIDTH}x{OUTPUT_HEIGHT}', '-pix_fmt', 'bgr24',
         '-r', str(fps), '-i', '-', '-c:v', 'libx264',
-        '-preset', 'fast', '-crf', '23', '-an', temp_video_output
+        '-preset', 'fast', '-crf', '23', '-pix_fmt', 'yuv420p', '-an', temp_video_output
     ]
 
     ffmpeg_process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -805,8 +812,7 @@ def get_viral_clips(transcript_result, video_duration):
 
     client = genai.Client(api_key=api_key)
     
-    # We use gemini-2.5-flash as requested.
-    model_name = 'gemini-2.5-flash' 
+    model_name = 'gemini-3-flash-preview'
     
     print(f"🤖  Initializing Gemini with model: {model_name}")
 
@@ -826,22 +832,40 @@ def get_viral_clips(transcript_result, video_duration):
         words_json=json.dumps(words)
     )
 
+    max_attempts = 6
+    transient_markers = (
+        "503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED",
+        "500", "502", "504", "INTERNAL", "DEADLINE_EXCEEDED",
+    )
+    response = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
+            break
+        except Exception as e:
+            err_str = str(e)
+            is_transient = any(m in err_str for m in transient_markers)
+            if attempt >= max_attempts or not is_transient:
+                print(f"❌ Gemini Error (attempt {attempt}/{max_attempts}): {err_str}")
+                return None
+            delay = min(5 * (2 ** (attempt - 1)), 120)
+            print(
+                f"⚠️  Gemini {err_str[:140]} — retrying in {delay}s "
+                f"(attempt {attempt + 1}/{max_attempts})"
+            )
+            time.sleep(delay)
+
     try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt
-        )
-        
         # --- Cost Calculation ---
         try:
             usage = response.usage_metadata
             if usage:
-                # Gemini 2.5 Flash Pricing (Dec 2025)
-                # Input: $0.10 per 1M tokens
-                # Output: $0.40 per 1M tokens
-                
-                input_price_per_million = 0.10
-                output_price_per_million = 0.40
+                # Gemini 3 Flash Preview pricing (text input / output)
+                input_price_per_million = 0.50
+                output_price_per_million = 3.00
                 
                 prompt_tokens = usage.prompt_token_count
                 output_tokens = usage.candidates_token_count
@@ -963,9 +987,8 @@ if __name__ == '__main__':
         clips_data = get_viral_clips(transcript, duration)
         
         if not clips_data or 'shorts' not in clips_data:
-            print("❌ Failed to identify clips. Converting whole video as fallback.")
-            output_file = os.path.join(output_dir, f"{video_title}_vertical.mp4")
-            process_video_to_vertical(input_video, output_file)
+            print("❌ Failed to identify viral clips from Gemini after retries. Re-submit the job to retry.")
+            exit(1)
         else:
             print(f"🔥 Found {len(clips_data['shorts'])} viral clips!")
             
