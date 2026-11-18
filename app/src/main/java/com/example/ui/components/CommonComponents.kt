@@ -511,3 +511,28 @@ fun shareImageFile(context: Context, filePath: String, caption: String = "") {
     }
     context.startActivity(Intent.createChooser(intent, "Export Image"))
 }
+
+fun shareVideoUri(context: Context, videoUriString: String, title: String, caption: String) {
+    val uri = try {
+        val parsed = Uri.parse(videoUriString)
+        if (parsed.scheme == "file" && !parsed.path.isNullOrBlank()) {
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", File(parsed.path!!))
+        } else {
+            parsed
+        }
+    } catch (_: Exception) {
+        null
+    }
+    if (uri != null && (uri.scheme == "content")) {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "video/mp4"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, title)
+            putExtra(Intent.EXTRA_TEXT, caption)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(intent, "Share Short Video"))
+    } else {
+        shareTextContent(context, title, caption)
+    }
+}

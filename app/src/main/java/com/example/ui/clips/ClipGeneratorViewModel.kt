@@ -11,13 +11,25 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.R
 import com.example.data.ai.OpenShortsAiRepository
+import com.example.data.automation.PublishAutomationScheduler
+import com.example.data.export.BatchExportManager
+import com.example.data.local.BatchExportStatus
+import com.example.data.local.CloudUploadStatus
+import com.example.data.local.EditingSession
+import com.example.data.local.EditingSessionStorageManager
+import com.example.data.model.CaptionBurnStyle
 import com.example.data.model.ClipJob
 import com.example.data.model.GeneratedClip
 import com.example.data.model.IntegrationSettings
+import com.example.data.model.LiveShortsSkillPreset
+import com.example.data.model.PublishMetadataDraft
+import com.example.data.model.TrimChatMessage
 import com.example.data.model.UiState
-import com.example.data.network.ExternalIntegrationsService
+import com.example.data.model.YouTubeSearchResult
+import com.example.data.network.YouTubeSearchService
 import com.example.data.preferences.SettingsDataStore
 import com.example.data.repository.OpenShortsFirestoreRepository
+import com.example.ui.components.PublishAutomationRequest
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
@@ -33,6 +45,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 private const val TAG = "ClipGenVM"
 
@@ -42,8 +55,24 @@ class ClipGeneratorViewModel(
     private val firestoreRepo: OpenShortsFirestoreRepository,
     private val aiRepo: OpenShortsAiRepository,
     private val settingsStore: SettingsDataStore,
-    private val externalService: ExternalIntegrationsService
+    private val scheduler: PublishAutomationScheduler,
+    private val youtubeSearchService: YouTubeSearchService = YouTubeSearchService(),
+    private val sessionStorageManager: EditingSessionStorageManager,
+    private val batchExportManager: BatchExportManager
 ) : ViewModel() {
+
+    private val sessionAndBatchDelegate = ClipSessionAndBatchDelegate(
+        currentUserId = currentUserId,
+        sessionStorageManager = sessionStorageManager,
+        batchExportManager = batchExportManager
+    )
+
+    private val publishAndEditDelegate = ClipPublishAndEditDelegate(
+        currentUserId = currentUserId,
+        firestoreRepo = firestoreRepo,
+        aiRepo = aiRepo,
+        scheduler = scheduler
+    )
 
     private val _selectedJobId = MutableStateFlow<String?>(null)
     val selectedJobId: StateFlow<String?> = _selectedJobId.asStateFlow()
@@ -57,8 +86,50 @@ class ClipGeneratorViewModel(
     private val _isEditorBusy = MutableStateFlow(false)
     val isEditorBusy: StateFlow<Boolean> = _isEditorBusy.asStateFlow()
 
+    private val _youtubeSearchState = MutableStateFlow<UiState<List<YouTubeSearchResult>>>(UiState.Idle)
+    val youtubeSearchState: StateFlow<UiState<List<YouTubeSearchResult>>> = _youtubeSearchState.asStateFlow()
+
+    private val _trimChatMessages = MutableStateFlow<List<TrimChatMessage>>(emptyList())
+    val trimChatMessages: StateFlow<List<TrimChatMessage>> = _trimChatMessages.asStateFlow()
+
+    private val _isTrimChatBusy = MutableStateFlow(false)
+    val isTrimChatBusy: StateFlow<Boolean> = _isTrimChatBusy.asStateFlow()
+
+    private val _activeLocalSessionId = MutableStateFlow<String?>(null)
+    val activeLocalSessionId: StateFlow<String?> = _activeLocalSessionId.asStateFlow()
+
+    val editingSessions: StateFlow<List<EditingSession>> = sessionStorageManager.observeSessions(currentUserId)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+
     val settings: StateFlow<IntegrationSettings> = settingsStore.settingsFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), IntegrationSettings())
+
+    val pendingAutomationCount: StateFlow<Int> = firestoreRepo.observePublishJobs(currentUserId)
+        .map { list -> list.count { it.status in listOf("queued", "scheduled", "uploading") } }
+        .catch { emit(0) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), 0)
+
+    val pendingBatchExportCount: StateFlow<Int> = batchExportManager.observeQueue(currentUserId)
+        .map { list ->
+            list.count {
+                it.status == BatchExportStatus.QUEUED ||
+                    it.status == BatchExportStatus.PROCESSING ||
+                    it.uploadStatus == CloudUploadStatus.UPLOADING ||
+                    it.uploadStatus == CloudUploadStatus.QUEUED
+            }
+        }
+        .catch { emit(0) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), 0)
+
+    private fun unwrapFirestoreError(error: Throwable, logContext: String, fallback: String): String {
+        val fsError = generateSequence(error) { it.cause }
+            .filterIsInstance<FirebaseFirestoreException>()
+            .firstOrNull()
+        if (fsError == null && error is CancellationException) throw error
+        val root = fsError ?: error
+        Log.w(TAG, logContext, root)
+        return root.message ?: fallback
+    }
 
     val jobsState: StateFlow<UiState<List<ClipJob>>> = firestoreRepo.observeClipJobs(currentUserId)
         .map<List<ClipJob>, UiState<List<ClipJob>>> { jobs ->
@@ -69,15 +140,7 @@ class ClipGeneratorViewModel(
             }
             UiState.Success(jobs)
         }
-        .catch { error ->
-            val fsError = generateSequence(error) { it.cause }
-                .filterIsInstance<FirebaseFirestoreException>()
-                .firstOrNull()
-            if (fsError == null && error is CancellationException) throw error
-            val root = fsError ?: error
-            Log.w(TAG, "Error observing clip jobs", root)
-            emit(UiState.Error(root.message ?: "Failed to load clip jobs."))
-        }
+        .catch { emit(UiState.Error(unwrapFirestoreError(it, "Error observing clip jobs", "Failed to load clip jobs."))) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
     val activeClipsState: StateFlow<UiState<List<GeneratedClip>>> = _selectedJobId
@@ -87,30 +150,178 @@ class ClipGeneratorViewModel(
             } else {
                 firestoreRepo.observeClipsForJob(currentUserId, jobId)
                     .map<List<GeneratedClip>, UiState<List<GeneratedClip>>> { UiState.Success(it) }
-                    .catch { error ->
-                        val fsError = generateSequence(error) { it.cause }
-                            .filterIsInstance<FirebaseFirestoreException>()
-                            .firstOrNull()
-                        if (fsError == null && error is CancellationException) throw error
-                        val root = fsError ?: error
-                        Log.w(TAG, "Error observing clips for job $jobId", root)
-                        emit(UiState.Error(root.message ?: "Failed to load clips."))
-                    }
+                    .catch { emit(UiState.Error(unwrapFirestoreError(it, "Error observing clips for job $jobId", "Failed to load clips."))) }
             }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
-    fun selectJob(jobId: String) {
-        _selectedJobId.value = jobId
+    fun selectJob(jobId: String) { _selectedJobId.value = jobId }
+    fun clearFeedback() { _editorFeedback.value = null }
+    fun clearGenerationError() { if (_generationState.value is UiState.Error) _generationState.value = UiState.Idle }
+    fun restoreTrimChat(messages: List<TrimChatMessage>) { _trimChatMessages.value = messages }
+
+    fun saveClipStudioSession(
+        title: String, saveAsNew: Boolean = false, sourceMode: String, sourceLabel: String,
+        videoUri: String?, thumbnailUrl: String?, totalDurationMs: Long, trimStartMs: Long, trimEndMs: Long,
+        guidanceNotes: String, liveSkillId: String, liveLookbackMinutes: Int, targetClipsCount: Int,
+        activeJobId: String?, burnStyle: CaptionBurnStyle = CaptionBurnStyle()
+    ) {
+        viewModelScope.launch {
+            sessionAndBatchDelegate.saveClipStudioSession(
+                _activeLocalSessionId.value, _trimChatMessages.value, title, saveAsNew, sourceMode, sourceLabel,
+                videoUri, thumbnailUrl, totalDurationMs, trimStartMs, trimEndMs, guidanceNotes, liveSkillId,
+                liveLookbackMinutes, targetClipsCount, activeJobId, burnStyle
+            ).fold(
+                onSuccess = { saved ->
+                    _activeLocalSessionId.value = saved.id
+                    _editorFeedback.value = "Saved session \"${saved.title}\" locally."
+                },
+                onFailure = { _editorFeedback.value = it.localizedMessage ?: "Failed to save editing session." }
+            )
+        }
     }
 
-    fun clearFeedback() {
-        _editorFeedback.value = null
+    suspend fun getLocalSessionById(sessionId: String): EditingSession? =
+        sessionAndBatchDelegate.getLocalSessionById(sessionId)
+
+    fun markLocalSessionResumed(session: EditingSession) {
+        _activeLocalSessionId.value = session.id
+        _trimChatMessages.value = session.trimChatHistory
+        if (!session.activeJobId.isNullOrBlank()) _selectedJobId.value = session.activeJobId
+        _editorFeedback.value = "Resumed editing session \"${session.title}\"."
     }
 
-    fun clearGenerationError() {
-        if (_generationState.value is UiState.Error) {
-            _generationState.value = UiState.Idle
+    fun deleteLocalSession(sessionId: String) {
+        viewModelScope.launch {
+            sessionAndBatchDelegate.deleteLocalSession(sessionId).fold(
+                onSuccess = {
+                    if (_activeLocalSessionId.value == sessionId) _activeLocalSessionId.value = null
+                    _editorFeedback.value = "Deleted saved session."
+                },
+                onFailure = { _editorFeedback.value = it.localizedMessage ?: "Failed to delete session." }
+            )
+        }
+    }
+
+    fun addTrimmedClipToBatch(
+        title: String, videoUriString: String, trimStartMs: Long, trimEndMs: Long,
+        clip: GeneratedClip? = null, filterStack: List<String> = emptyList(),
+        filterContrast: Float = 0f, filterSaturation: Float = 0f, filterBrightness: Float = 0f,
+        startImmediately: Boolean = false
+    ) {
+        if (videoUriString.isBlank()) {
+            _editorFeedback.value = "Attach a local device video file to add trimmed clips to the export batch."
+            return
+        }
+        viewModelScope.launch {
+            sessionAndBatchDelegate.addTrimmedClipToBatch(
+                title, videoUriString, trimStartMs, trimEndMs, clip, filterStack,
+                filterContrast, filterSaturation, filterBrightness, startImmediately
+            ).fold(
+                onSuccess = { _editorFeedback.value = it },
+                onFailure = { _editorFeedback.value = it.localizedMessage ?: "Failed to queue clip for export." }
+            )
+        }
+    }
+
+    fun addAllClipsToBatch(
+        clips: List<GeneratedClip>, videoUriString: String?, filterStack: List<String> = emptyList(),
+        filterContrast: Float = 0f, filterSaturation: Float = 0f, filterBrightness: Float = 0f,
+        startImmediately: Boolean = false
+    ) {
+        val uri = videoUriString?.takeIf { it.isNotBlank() }
+        if (uri == null || clips.isEmpty()) {
+            _editorFeedback.value = "Generate clips from a local device video to batch export."
+            return
+        }
+        viewModelScope.launch {
+            val addedCount = sessionAndBatchDelegate.addAllClipsToBatch(
+                clips, uri, filterStack, filterContrast, filterSaturation, filterBrightness, startImmediately
+            )
+            _editorFeedback.value = if (addedCount > 0) {
+                "Added $addedCount trimmed clips to sequential export batch."
+            } else {
+                "No clips could be added to the export batch."
+            }
+        }
+    }
+
+    fun searchYouTube(query: String, liveOnly: Boolean) {
+        viewModelScope.launch {
+            _youtubeSearchState.value = UiState.Loading
+            val res = youtubeSearchService.searchVideos(query = query, liveOnly = liveOnly)
+            _youtubeSearchState.value = res.fold(
+                onSuccess = { UiState.Success(it) },
+                onFailure = { UiState.Error(it.localizedMessage ?: "YouTube search failed.") }
+            )
+        }
+    }
+
+    fun resetTrimChat(sessionKey: String? = null) {
+        _trimChatMessages.value = emptyList()
+    }
+
+    fun sendTrimChatReview(
+        videoTitle: String,
+        sourceLabel: String,
+        totalDurationSec: Double,
+        currentStartSec: Double,
+        currentEndSec: Double,
+        transcriptOrContext: String,
+        userMessage: String
+    ) {
+        val cleanMsg = userMessage.trim()
+        if (cleanMsg.isBlank()) return
+        val userEntry = TrimChatMessage(id = UUID.randomUUID().toString(), fromUser = true, text = cleanMsg)
+        val updatedHistory = _trimChatMessages.value + userEntry
+        _trimChatMessages.value = updatedHistory
+
+        viewModelScope.launch {
+            _isTrimChatBusy.value = true
+            try {
+                val aiEntry = publishAndEditDelegate.reviewTrimChat(
+                    videoTitle = videoTitle,
+                    sourceLabel = sourceLabel,
+                    totalDurationSec = totalDurationSec,
+                    currentStartSec = currentStartSec,
+                    currentEndSec = currentEndSec,
+                    transcriptOrContext = transcriptOrContext,
+                    chatHistory = updatedHistory,
+                    userRequest = cleanMsg
+                )
+                _trimChatMessages.value = _trimChatMessages.value + aiEntry
+            } finally {
+                _isTrimChatBusy.value = false
+            }
+        }
+    }
+
+    fun analyzeLiveStreamForShorts(
+        liveStreamUrl: String,
+        lookbackMinutes: Int,
+        skillPreset: LiveShortsSkillPreset,
+        liveCueNotes: String,
+        maxClips: Int
+    ) {
+        if (liveStreamUrl.isBlank()) {
+            _generationState.value = UiState.Error("Enter or search a Live Stream URL (YouTube Live or .m3u8) first.")
+            return
+        }
+        viewModelScope.launch {
+            _generationState.value = UiState.Loading
+            publishAndEditDelegate.runLiveStreamAnalysis(
+                liveStreamUrl, lookbackMinutes, skillPreset, liveCueNotes, maxClips
+            ).fold(
+                onSuccess = { (createdJobId, clipCount) ->
+                    _selectedJobId.value = createdJobId
+                    _generationState.value = UiState.Success(
+                        "Live Video Shorts (${skillPreset.label}) extracted $clipCount viral clips."
+                    )
+                },
+                onFailure = { e ->
+                    _generationState.value = UiState.Error(e.localizedMessage ?: "Live stream shorts failed.")
+                }
+            )
         }
     }
 
@@ -127,57 +338,74 @@ class ClipGeneratorViewModel(
         }
         viewModelScope.launch {
             _generationState.value = UiState.Loading
-            try {
-                val (durationSec, analysis) = aiRepo.analyzeVideoForClips(
-                    sourceLabel = sourceLabel,
-                    videoUri = videoUri,
-                    clipGuidance = clipGuidance,
-                    maxClips = maxClips
-                )
-                val job = ClipJob(
-                    userId = currentUserId,
-                    sourceType = sourceType,
-                    sourceLabel = sourceLabel,
-                    videoUri = videoUri?.toString(),
-                    durationSec = durationSec,
-                    status = "completed",
-                    summary = analysis.summary,
-                    clipsCount = analysis.clips.size.toLong()
-                )
-                val clips = analysis.clips.mapIndexed { idx, moment ->
-                    GeneratedClip(
-                        userId = currentUserId,
-                        clipIndex = idx.toLong(),
-                        startSec = moment.startSec,
-                        endSec = moment.endSec,
-                        youtubeTitle = moment.youtubeTitle,
-                        tiktokCaption = moment.tiktokCaption,
-                        instagramCaption = moment.instagramCaption,
-                        viralHookText = moment.viralHookText,
-                        subtitleText = moment.subtitleText,
-                        effectsSummary = moment.effectsSummary,
-                        viralScore = moment.viralScore.toLong()
+            publishAndEditDelegate.runVideoClipAnalysis(
+                sourceType, sourceLabel, videoUri, clipGuidance, maxClips, settings.value
+            ).fold(
+                onSuccess = { (createdJobId, clipCount, queuedCount) ->
+                    _selectedJobId.value = createdJobId
+                    _generationState.value = UiState.Success(
+                        if (queuedCount > 0) {
+                            "Generated $clipCount clips & auto-queued $queuedCount for YouTube/Instagram."
+                        } else {
+                            "Generated $clipCount viral clips."
+                        }
                     )
+                },
+                onFailure = { e ->
+                    _generationState.value = UiState.Error(e.localizedMessage ?: "AI analysis failed.")
                 }
-                val result = firestoreRepo.createClipJobWithClips(currentUserId, job, clips)
-                result.fold(
-                    onSuccess = { createdJobId ->
-                        _selectedJobId.value = createdJobId
-                        _generationState.value = UiState.Success("Generated ${clips.size} viral clips.")
-                    },
-                    onFailure = { e ->
-                        _generationState.value = UiState.Error(e.localizedMessage ?: "Failed to save clips.")
-                    }
-                )
-            } catch (e: TimeoutCancellationException) {
-                Log.e(TAG, "Clip analysis timed out", e)
-                _generationState.value = UiState.Error("Analysis timed out after 60s. Please retry.")
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "Clip generation failed", e)
-                _generationState.value = UiState.Error(e.localizedMessage ?: "AI analysis failed.")
-            }
+            )
+        }
+    }
+
+    fun buildYoutubeDescriptionFromClip(clip: GeneratedClip, includeTranscript: Boolean): String =
+        ClipMetadataFormatter.buildYoutubeDescriptionFromClip(clip, includeTranscript)
+
+    fun buildInstagramCaptionFromClip(clip: GeneratedClip): String =
+        ClipMetadataFormatter.buildInstagramCaptionFromClip(clip)
+
+    suspend fun optimizeMetadataForClip(
+        clip: GeneratedClip,
+        titleHint: String,
+        ytDesc: String,
+        igCaption: String
+    ): Result<PublishMetadataDraft> = publishAndEditDelegate.optimizeMetadataForClip(clip, titleHint, ytDesc, igCaption)
+
+    fun saveClipTrim(clip: GeneratedClip, startSec: Double, endSec: Double) {
+        viewModelScope.launch {
+            _isEditorBusy.value = true
+            _editorFeedback.value = publishAndEditDelegate.saveClipTrim(clip, startSec, endSec)
+            _isEditorBusy.value = false
+        }
+    }
+
+    fun automateClipPublish(clip: GeneratedClip, request: PublishAutomationRequest) {
+        viewModelScope.launch {
+            _isEditorBusy.value = true
+            _editorFeedback.value = publishAndEditDelegate.automateClipPublish(clip, request)
+            _isEditorBusy.value = false
+        }
+    }
+
+    fun automateWeekQueue(
+        clips: List<GeneratedClip>,
+        videoUriString: String?,
+        youtubeEnabled: Boolean,
+        instagramEnabled: Boolean,
+        startDayIsoDate: String,
+        postTimeHour: Int
+    ) {
+        if (!youtubeEnabled && !instagramEnabled) {
+            _editorFeedback.value = "Select YouTube and/or Instagram first."
+            return
+        }
+        viewModelScope.launch {
+            _isEditorBusy.value = true
+            _editorFeedback.value = publishAndEditDelegate.automateWeekQueue(
+                clips, videoUriString, youtubeEnabled, instagramEnabled,
+                startDayIsoDate, postTimeHour, settings.value
+            )
+            _isEditorBusy.value = false
         }
     }
 
@@ -192,22 +420,10 @@ class ClipGeneratorViewModel(
     ) {
         viewModelScope.launch {
             _isEditorBusy.value = true
-            val res = firestoreRepo.updateClipSubtitles(
-                userId = currentUserId,
-                jobId = clip.jobId,
-                clipId = clip.id,
-                subtitlePosition = position,
-                subtitleAnimation = animation,
-                subtitleFont = font,
-                subtitleColorHex = colorHex,
-                subtitleHighlightHex = highlightHex,
-                subtitleText = text
+            _editorFeedback.value = publishAndEditDelegate.saveSubtitles(
+                clip, position, animation, font, colorHex, highlightHex, text
             )
             _isEditorBusy.value = false
-            _editorFeedback.value = res.fold(
-                onSuccess = { "Subtitles updated on clip." },
-                onFailure = { it.localizedMessage ?: "Failed to update subtitles." }
-            )
         }
     }
 
@@ -221,124 +437,24 @@ class ClipGeneratorViewModel(
     ) {
         viewModelScope.launch {
             _isEditorBusy.value = true
-            val res = firestoreRepo.updateClipHook(
-                userId = currentUserId,
-                jobId = clip.jobId,
-                clipId = clip.id,
-                viralHookText = hookText,
-                hookPosition = position,
-                hookSize = size,
-                hookAnimation = animation,
-                hookDurationSec = durationSec
+            _editorFeedback.value = publishAndEditDelegate.saveHook(
+                clip, hookText, position, size, animation, durationSec
             )
             _isEditorBusy.value = false
-            _editorFeedback.value = res.fold(
-                onSuccess = { "Viral hook updated on clip." },
-                onFailure = { it.localizedMessage ?: "Failed to save hook." }
-            )
         }
     }
 
     fun translateAndDubClip(clip: GeneratedClip, targetLanguage: String) {
         viewModelScope.launch {
             _isEditorBusy.value = true
-            try {
-                val translated = aiRepo.translateClipContent(
-                    targetLanguage = targetLanguage,
-                    subtitleText = clip.subtitleText.orEmpty(),
-                    hookText = clip.viralHookText.orEmpty(),
-                    youtubeTitle = clip.youtubeTitle,
-                    tiktokCaption = clip.tiktokCaption.orEmpty()
-                )
-                val res = firestoreRepo.updateClipTranslation(
-                    userId = currentUserId,
-                    jobId = clip.jobId,
-                    clipId = clip.id,
-                    translatedLanguage = translated.translatedLanguage,
-                    subtitleText = translated.translatedSubtitles,
-                    viralHookText = translated.translatedHook,
-                    youtubeTitle = translated.translatedYoutubeTitle,
-                    tiktokCaption = translated.translatedTiktokCaption
-                )
-                _editorFeedback.value = res.fold(
-                    onSuccess = { "Translated clip into ${translated.translatedLanguage}." },
-                    onFailure = { it.localizedMessage ?: "Failed to save translation." }
-                )
-            } catch (e: TimeoutCancellationException) {
-                _editorFeedback.value = "Translation timed out. Please retry."
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "Translation failed", e)
-                _editorFeedback.value = e.localizedMessage ?: "Translation failed."
-            } finally {
-                _isEditorBusy.value = false
-            }
-        }
-    }
-
-    fun postClipViaUploadPost(
-        title: String,
-        platforms: List<String>,
-        scheduledIso: String?
-    ) {
-        val currentSettings = settings.value
-        viewModelScope.launch {
-            _isEditorBusy.value = true
-            val res = externalService.scheduleUploadPostTextOrStatus(
-                apiKey = currentSettings.uploadPostApiKey,
-                username = currentSettings.uploadPostUsername,
-                title = title,
-                platforms = platforms,
-                scheduledIsoDate = scheduledIso
-            )
+            _editorFeedback.value = publishAndEditDelegate.translateAndDubClip(clip, targetLanguage)
             _isEditorBusy.value = false
-            _editorFeedback.value = res.fold(
-                onSuccess = { it },
-                onFailure = { it.localizedMessage ?: "Publishing failed." }
-            )
-        }
-    }
-
-    fun scheduleWeekViaUploadPost(
-        clips: List<GeneratedClip>,
-        platforms: List<String>,
-        startDayIsoDate: String,
-        postTimeHour: Int
-    ) {
-        val currentSettings = settings.value
-        if (currentSettings.uploadPostApiKey.isBlank() || currentSettings.uploadPostUsername.isBlank()) {
-            _editorFeedback.value = "Add your Upload-Post API Key & Account in Settings first, or export clips via Share."
-            return
-        }
-        viewModelScope.launch {
-            _isEditorBusy.value = true
-            var successCount = 0
-            var lastError: String? = null
-            clips.take(7).forEachIndexed { idx, clip ->
-                val iso = "${startDayIsoDate}T%02d:00:00Z".format(postTimeHour.coerceIn(0, 23))
-                val res = externalService.scheduleUploadPostTextOrStatus(
-                    apiKey = currentSettings.uploadPostApiKey,
-                    username = currentSettings.uploadPostUsername,
-                    title = "${clip.youtubeTitle}\n\n${clip.tiktokCaption.orEmpty()}",
-                    platforms = platforms,
-                    scheduledIsoDate = iso
-                )
-                if (res.isSuccess) successCount++ else lastError = res.exceptionOrNull()?.localizedMessage
-            }
-            _isEditorBusy.value = false
-            _editorFeedback.value = if (successCount > 0) {
-                "Scheduled $successCount clip(s) across ${platforms.joinToString(", ")}."
-            } else {
-                lastError ?: "Scheduling failed."
-            }
         }
     }
 
     fun deleteJob(jobId: String) {
         viewModelScope.launch {
-            val res = firestoreRepo.deleteClipJob(currentUserId, jobId)
-            res.onFailure {
+            firestoreRepo.deleteClipJob(currentUserId, jobId).onFailure {
                 _editorFeedback.value = it.localizedMessage ?: "Failed to delete job."
             }
         }
@@ -354,7 +470,9 @@ class ClipGeneratorViewModel(
                     firestoreRepo = OpenShortsFirestoreRepository(db),
                     aiRepo = OpenShortsAiRepository(app),
                     settingsStore = SettingsDataStore(app),
-                    externalService = ExternalIntegrationsService()
+                    scheduler = PublishAutomationScheduler(app),
+                    sessionStorageManager = EditingSessionStorageManager(app),
+                    batchExportManager = BatchExportManager(app)
                 )
             }
         }

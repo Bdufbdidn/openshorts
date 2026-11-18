@@ -31,7 +31,7 @@ data class ClipJob(
 ) {
     fun toCreateMap(): Map<String, Any> = mapOf(
         "userId" to userId,
-        "sourceType" to if (sourceType in listOf("video", "url")) sourceType else "video",
+        "sourceType" to if (sourceType in listOf("video", "url", "live")) sourceType else "video",
         "sourceLabel" to sourceLabel.ifBlank { "Untitled Video" }.take(500),
         "videoUri" to videoUri?.take(500),
         "durationSec" to durationSec.coerceAtLeast(0.0),
@@ -277,6 +277,51 @@ data class TranslatedClipResult(
     val translatedTiktokCaption: String
 )
 
+data class PublishMetadataDraft(
+    val youtubeTitle: String,
+    val youtubeDescription: String,
+    val instagramCaption: String
+)
+
+@Keep
+@IgnoreExtraProperties
+data class PublishAutomationJob(
+    @DocumentId val id: String = "",
+    val userId: String = "",
+    val sourceType: String = "clip",
+    val sourceId: String? = null,
+    val youtubeEnabled: Boolean = true,
+    val instagramEnabled: Boolean = true,
+    val youtubeTitle: String = "",
+    val youtubeDescription: String = "",
+    val youtubePrivacy: String = "public",
+    val instagramCaption: String = "",
+    val videoUri: String? = null,
+    val scheduledIso: String? = null,
+    val status: String = "queued",
+    val resultMessage: String? = null,
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    fun toCreateMap(): Map<String, Any> = mapOf(
+        "userId" to userId,
+        "sourceType" to if (sourceType in listOf("clip", "ai_short", "youtube_studio", "custom")) sourceType else "clip",
+        "sourceId" to sourceId?.take(128)?.takeIf { it.isNotBlank() },
+        "youtubeEnabled" to youtubeEnabled,
+        "instagramEnabled" to instagramEnabled,
+        "youtubeTitle" to youtubeTitle.ifBlank { "New Viral Short #Shorts" }.take(150),
+        "youtubeDescription" to youtubeDescription.take(5000),
+        "youtubePrivacy" to if (youtubePrivacy in listOf("public", "unlisted", "private")) youtubePrivacy else "public",
+        "instagramCaption" to instagramCaption.take(2200),
+        "videoUri" to videoUri?.take(500)?.takeIf { it.isNotBlank() },
+        "scheduledIso" to scheduledIso?.take(40)?.takeIf { it.isNotBlank() },
+        "status" to if (status in listOf("queued", "scheduled", "uploading", "published", "failed")) status else "queued",
+        "resultMessage" to resultMessage?.take(1000)?.takeIf { it.isNotBlank() },
+        "createdAt" to FieldValue.serverTimestamp(),
+        "updatedAt" to FieldValue.serverTimestamp()
+    ).filterValues { it != null }.mapValues { it.value!! }
+}
+
 data class ConnectedAccount(
     val username: String,
     val platforms: List<String>
@@ -286,5 +331,100 @@ data class IntegrationSettings(
     val uploadPostApiKey: String = "",
     val uploadPostUsername: String = "",
     val elevenLabsApiKey: String = "",
-    val falAiApiKey: String = ""
+    val falAiApiKey: String = "",
+    val autoPostEnabled: Boolean = false,
+    val defaultAutoYouTube: Boolean = true,
+    val defaultAutoInstagram: Boolean = true,
+    val defaultYoutubePrivacy: String = "public",
+    val defaultPostHourUtc: Int = 16,
+    val includeTranscriptInCaptions: Boolean = true,
+    val directInstagramUserId: String = "",
+    val directInstagramAccessToken: String = ""
 )
+
+// --- Gemini Audio Transcription & Burn-In Caption Export Models ---
+
+data class TimedCaptionCue(
+    val index: Int,
+    val startMs: Long,
+    val endMs: Long,
+    val text: String,
+    val highlightWord: String = ""
+)
+
+data class VideoTranscriptionResult(
+    val fullTranscript: String,
+    val detectedLanguage: String,
+    val audioTrackInfo: String,
+    val cues: List<TimedCaptionCue>,
+    val srtText: String
+)
+
+data class CaptionBurnStyle(
+    val position: String = "bottom",
+    val animation: String = "word-highlight",
+    val fontName: String = "SpaceGrotesk",
+    val textColorHex: String = "#FFFFFF",
+    val highlightColorHex: String = "#3B82F6",
+    val hookText: String = "",
+    val hookPosition: String = "top",
+    val hookSize: String = "M",
+    val hookDurationSec: Long = 5L,
+    val filterStack: List<String> = emptyList(),
+    val filterContrast: Float = 0f,
+    val filterSaturation: Float = 0f,
+    val filterBrightness: Float = 0f
+) {
+    fun hasVideoFilters(): Boolean =
+        filterStack.isNotEmpty() ||
+            kotlin.math.abs(filterContrast) >= 0.02f ||
+            kotlin.math.abs(filterSaturation) >= 1f ||
+            kotlin.math.abs(filterBrightness) >= 0.02f
+}
+
+data class CaptionExportResult(
+    val outputFilePath: String,
+    val contentUri: String,
+    val fileSizeBytes: Long,
+    val durationMs: Long,
+    val savedToGalleryUri: String? = null
+)
+
+// --- YouTube Search, Chat Trim Review & Live Video Shorts Models ---
+
+data class YouTubeSearchResult(
+    val videoId: String,
+    val title: String,
+    val channelName: String,
+    val durationText: String,
+    val durationSec: Double,
+    val viewCountText: String,
+    val thumbnailUrl: String,
+    val url: String,
+    val liveBroadcast: Boolean = false
+)
+
+data class TrimChatMessage(
+    val id: String,
+    val fromUser: Boolean,
+    val text: String,
+    val suggestedStartSec: Double? = null,
+    val suggestedEndSec: Double? = null,
+    val appliedTrim: Boolean = false
+)
+
+data class TrimChatReviewResult(
+    val assistantMessage: String,
+    val suggestedStartSec: Double,
+    val suggestedEndSec: Double,
+    val shouldApplyTrim: Boolean,
+    val suggestedTitle: String = ""
+)
+
+data class LiveShortsSkillPreset(
+    val id: String,
+    val label: String,
+    val tagline: String,
+    val promptInstruction: String
+)
+

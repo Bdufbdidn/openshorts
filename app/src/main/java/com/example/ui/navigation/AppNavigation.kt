@@ -37,16 +37,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.toRoute
 import com.example.R
 import com.example.ui.aishorts.AiShortsScreen
 import com.example.ui.auth.AuthScreen
+import com.example.ui.automation.AutomationQueueScreen
+import com.example.ui.captions.CaptionExportInitArgs
+import com.example.ui.captions.CaptionExportScreen
 import com.example.ui.clips.ClipGeneratorScreen
+import com.example.ui.export.BatchExportQueueScreen
 import com.example.ui.gallery.UgcGalleryScreen
 import com.example.ui.settings.SettingsScreen
 import com.example.ui.youtube.YouTubeStudioScreen
@@ -69,6 +75,34 @@ object YouTubeStudioRoute
 
 @Serializable
 object SettingsRoute
+
+@Serializable
+object AutomationQueueRoute
+
+@Serializable
+object BatchExportQueueRoute
+
+@Serializable
+data class CaptionExportRoute(
+    val initialVideoUri: String = "",
+    val jobId: String = "",
+    val clipId: String = "",
+    val clipStartMs: Long = 0L,
+    val clipEndMs: Long = -1L,
+    val initialTranscript: String = "",
+    val initialTitle: String = "",
+    val initialHook: String = "",
+    val subtitlePosition: String = "bottom",
+    val subtitleAnimation: String = "word-highlight",
+    val subtitleFont: String = "SpaceGrotesk",
+    val subtitleColorHex: String = "#FFFFFF",
+    val subtitleHighlightHex: String = "#3B82F6",
+    val initialFilterStackCsv: String = "",
+    val filterContrast: Float = 0f,
+    val filterSaturation: Float = 0f,
+    val filterBrightness: Float = 0f,
+    val localSessionId: String = ""
+)
 
 private data class NavDestinationItem(
     val route: Any,
@@ -158,6 +192,10 @@ private fun MainShell(
     }
 
     val useNavigationRail = widthSizeClass != WindowWidthSizeClass.Compact
+    val isAutomationQueue = currentDestination?.hasRoute(AutomationQueueRoute::class) == true
+    val isCaptionExport = currentDestination?.hasRoute(CaptionExportRoute::class) == true
+    val isBatchExport = currentDestination?.hasRoute(BatchExportQueueRoute::class) == true
+    val hideMainChrome = isAutomationQueue || isCaptionExport || isBatchExport
 
     fun navigateToTab(route: Any) {
         navController.navigate(route) {
@@ -173,7 +211,7 @@ private fun MainShell(
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets.safeDrawing,
         bottomBar = {
-            if (!useNavigationRail) {
+            if (!useNavigationRail && !hideMainChrome) {
                 NavigationBar(
                     containerColor = MaterialTheme.colorScheme.surface
                 ) {
@@ -206,7 +244,7 @@ private fun MainShell(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            if (useNavigationRail) {
+            if (useNavigationRail && !hideMainChrome) {
                 NavigationRail(
                     containerColor = MaterialTheme.colorScheme.surface
                 ) {
@@ -238,20 +276,110 @@ private fun MainShell(
                     navController = navController,
                     startDestination = ClipsRoute
                 ) {
-                    composable<ClipsRoute> {
-                        ClipGeneratorScreen(currentUserId = currentUserId)
+                    composable<ClipsRoute> { entry ->
+                        val pendingResumeId by entry.savedStateHandle
+                            .getStateFlow<String?>("resume_local_session_id", null)
+                            .collectAsStateWithLifecycle()
+                        ClipGeneratorScreen(
+                            currentUserId = currentUserId,
+                            pendingResumeSessionId = pendingResumeId,
+                            onConsumedPendingResume = {
+                                entry.savedStateHandle["resume_local_session_id"] = null
+                            },
+                            onOpenAutomationQueue = { navController.navigate(AutomationQueueRoute) },
+                            onOpenBatchExportQueue = { navController.navigate(BatchExportQueueRoute) },
+                            onOpenCaptionExport = { args ->
+                                navController.navigate(
+                                    CaptionExportRoute(
+                                        initialVideoUri = args.initialVideoUri,
+                                        jobId = args.jobId,
+                                        clipId = args.clipId,
+                                        clipStartMs = args.clipStartMs,
+                                        clipEndMs = args.clipEndMs,
+                                        initialTranscript = args.initialTranscript,
+                                        initialTitle = args.initialTitle,
+                                        initialHook = args.initialHook,
+                                        subtitlePosition = args.subtitlePosition,
+                                        subtitleAnimation = args.subtitleAnimation,
+                                        subtitleFont = args.subtitleFont,
+                                        subtitleColorHex = args.subtitleColorHex,
+                                        subtitleHighlightHex = args.subtitleHighlightHex,
+                                        initialFilterStackCsv = args.initialFilterStackCsv,
+                                        filterContrast = args.filterContrast,
+                                        filterSaturation = args.filterSaturation,
+                                        filterBrightness = args.filterBrightness,
+                                        localSessionId = args.localSessionId
+                                    )
+                                )
+                            }
+                        )
                     }
                     composable<AiShortsRoute> {
-                        AiShortsScreen(currentUserId = currentUserId)
+                        AiShortsScreen(
+                            currentUserId = currentUserId,
+                            onOpenAutomationQueue = { navController.navigate(AutomationQueueRoute) }
+                        )
                     }
                     composable<GalleryRoute> {
                         UgcGalleryScreen(currentUserId = currentUserId)
                     }
                     composable<YouTubeStudioRoute> {
-                        YouTubeStudioScreen(currentUserId = currentUserId)
+                        YouTubeStudioScreen(
+                            currentUserId = currentUserId,
+                            onOpenAutomationQueue = { navController.navigate(AutomationQueueRoute) }
+                        )
                     }
                     composable<SettingsRoute> {
-                        SettingsScreen(currentUserId = currentUserId)
+                        SettingsScreen(
+                            currentUserId = currentUserId,
+                            onOpenAutomationQueue = { navController.navigate(AutomationQueueRoute) }
+                        )
+                    }
+                    composable<AutomationQueueRoute> {
+                        AutomationQueueScreen(
+                            currentUserId = currentUserId,
+                            onNavigateBack = { navController.popBackStack() }
+                        )
+                    }
+                    composable<CaptionExportRoute> { entry ->
+                        val parsed = entry.toRoute<CaptionExportRoute>()
+                        CaptionExportScreen(
+                            currentUserId = currentUserId,
+                            args = CaptionExportInitArgs(
+                                initialVideoUri = parsed.initialVideoUri,
+                                jobId = parsed.jobId,
+                                clipId = parsed.clipId,
+                                clipStartMs = parsed.clipStartMs,
+                                clipEndMs = parsed.clipEndMs,
+                                initialTranscript = parsed.initialTranscript,
+                                initialTitle = parsed.initialTitle,
+                                initialHook = parsed.initialHook,
+                                subtitlePosition = parsed.subtitlePosition,
+                                subtitleAnimation = parsed.subtitleAnimation,
+                                subtitleFont = parsed.subtitleFont,
+                                subtitleColorHex = parsed.subtitleColorHex,
+                                subtitleHighlightHex = parsed.subtitleHighlightHex,
+                                initialFilterStackCsv = parsed.initialFilterStackCsv,
+                                filterContrast = parsed.filterContrast,
+                                filterSaturation = parsed.filterSaturation,
+                                filterBrightness = parsed.filterBrightness,
+                                localSessionId = parsed.localSessionId
+                            ),
+                            onResumeClipStudioSession = { sessionId ->
+                                navController.previousBackStackEntry
+                                    ?.savedStateHandle
+                                    ?.set("resume_local_session_id", sessionId)
+                                navController.popBackStack()
+                            },
+                            onOpenBatchExportQueue = { navController.navigate(BatchExportQueueRoute) },
+                            onNavigateBack = { navController.popBackStack() }
+                        )
+                    }
+                    composable<BatchExportQueueRoute> {
+                        BatchExportQueueScreen(
+                            currentUserId = currentUserId,
+                            onNavigateBack = { navController.popBackStack() }
+                        )
                     }
                 }
             }

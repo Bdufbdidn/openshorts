@@ -24,8 +24,10 @@ output/
 .idea/
 .vscode/
 
-# Secrets
+# Secrets & live Firebase configs (use *.example templates in git)
 .env
+app/google-services.json
+app/src/main/res/values/firebase_applet_config.xml
 
 # Generated metadata
 *_metadata.json

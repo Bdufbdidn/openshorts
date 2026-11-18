@@ -12,10 +12,18 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.R
 import com.example.data.ai.OpenShortsAiRepository
+import com.example.data.automation.PublishAutomationScheduler
+import com.example.data.model.IntegrationSettings
+import com.example.data.model.PublishAutomationJob
+import com.example.data.model.PublishMetadataDraft
 import com.example.data.model.TitleRecommendation
 import com.example.data.model.UiState
+import com.example.data.model.YouTubeSearchResult
 import com.example.data.model.YoutubeStudioProject
+import com.example.data.network.YouTubeSearchService
+import com.example.data.preferences.SettingsDataStore
 import com.example.data.repository.OpenShortsFirestoreRepository
+import com.example.ui.components.PublishAutomationRequest
 import com.google.firebase.ai.Chat
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
@@ -48,7 +56,10 @@ data class ChatBubble(
 class YouTubeStudioViewModel(
     private val currentUserId: String,
     private val firestoreRepo: OpenShortsFirestoreRepository,
-    private val aiRepo: OpenShortsAiRepository
+    private val aiRepo: OpenShortsAiRepository,
+    private val settingsStore: SettingsDataStore,
+    private val scheduler: PublishAutomationScheduler,
+    private val youtubeSearchService: YouTubeSearchService = YouTubeSearchService()
 ) : ViewModel() {
 
     private val _step = MutableStateFlow(YouTubeStep.INPUT)
@@ -74,6 +85,15 @@ class YouTubeStudioViewModel(
 
     private val _saveState = MutableStateFlow<UiState<String>>(UiState.Idle)
     val saveState: StateFlow<UiState<String>> = _saveState.asStateFlow()
+
+    private val _isAutomatingPost = MutableStateFlow(false)
+    val isAutomatingPost: StateFlow<Boolean> = _isAutomatingPost.asStateFlow()
+
+    private val _youtubeSearchState = MutableStateFlow<UiState<List<YouTubeSearchResult>>>(UiState.Idle)
+    val youtubeSearchState: StateFlow<UiState<List<YouTubeSearchResult>>> = _youtubeSearchState.asStateFlow()
+
+    val settings: StateFlow<IntegrationSettings> = settingsStore.settingsFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), IntegrationSettings())
 
     val savedProjectsState: StateFlow<UiState<List<YoutubeStudioProject>>> =
         firestoreRepo.observeYoutubeProjects(currentUserId)
@@ -103,6 +123,17 @@ class YouTubeStudioViewModel(
 
     fun selectThumbnail(index: Int) {
         _selectedThumbnailIndex.value = index
+    }
+
+    fun searchYouTube(query: String, liveOnly: Boolean) {
+        viewModelScope.launch {
+            _youtubeSearchState.value = UiState.Loading
+            val res = youtubeSearchService.searchVideos(query = query, liveOnly = liveOnly)
+            _youtubeSearchState.value = res.fold(
+                onSuccess = { UiState.Success(it) },
+                onFailure = { UiState.Error(it.localizedMessage ?: "YouTube search failed.") }
+            )
+        }
     }
 
     fun generateViralTitles(videoUri: Uri?, topicOrNotes: String) {
@@ -253,6 +284,60 @@ class YouTubeStudioViewModel(
         }
     }
 
+    suspend fun optimizePublishMetadata(
+        titleHint: String,
+        ytDesc: String,
+        igCaption: String
+    ): Result<PublishMetadataDraft> {
+        return try {
+            val draft = aiRepo.generatePublishMetadata(
+                titleHint = titleHint,
+                contextText = igCaption,
+                transcript = ytDesc
+            )
+            Result.success(draft)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun automatePost(request: PublishAutomationRequest) {
+        viewModelScope.launch {
+            _isAutomatingPost.value = true
+            val isScheduled = !request.scheduledIso.isNullOrBlank()
+            val publishJob = PublishAutomationJob(
+                userId = currentUserId,
+                sourceType = "youtube_studio",
+                youtubeEnabled = request.youtubeEnabled,
+                instagramEnabled = request.instagramEnabled,
+                youtubeTitle = request.youtubeTitle,
+                youtubeDescription = request.youtubeDescription,
+                youtubePrivacy = request.youtubePrivacy,
+                instagramCaption = request.instagramCaption,
+                videoUri = request.videoUri,
+                scheduledIso = request.scheduledIso,
+                status = if (isScheduled) "scheduled" else "queued",
+                resultMessage = if (isScheduled) "Scheduled from YouTube Studio" else "Queued from YouTube Studio"
+            )
+            val res = firestoreRepo.createPublishJob(currentUserId, publishJob)
+            _isAutomatingPost.value = false
+            res.fold(
+                onSuccess = { jobId ->
+                    scheduler.enqueuePublishJob(currentUserId, jobId, request.scheduledIso)
+                    _saveState.value = UiState.Success(
+                        if (isScheduled) "Scheduled YouTube & Instagram post (${request.scheduledIso})."
+                        else "Started automated YouTube & Instagram post."
+                    )
+                },
+                onFailure = { e ->
+                    _saveState.value = UiState.Error(e.localizedMessage ?: "Failed to queue automation.")
+                }
+            )
+        }
+    }
+
     companion object {
         fun provideFactory(currentUserId: String): ViewModelProvider.Factory = viewModelFactory {
             initializer {
@@ -261,7 +346,9 @@ class YouTubeStudioViewModel(
                 YouTubeStudioViewModel(
                     currentUserId = currentUserId,
                     firestoreRepo = OpenShortsFirestoreRepository(db),
-                    aiRepo = OpenShortsAiRepository(app)
+                    aiRepo = OpenShortsAiRepository(app),
+                    settingsStore = SettingsDataStore(app),
+                    scheduler = PublishAutomationScheduler(app)
                 )
             }
         }

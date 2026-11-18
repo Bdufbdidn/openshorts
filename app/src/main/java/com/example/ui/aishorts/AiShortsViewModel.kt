@@ -12,12 +12,18 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.R
 import com.example.data.ai.OpenShortsAiRepository
+import com.example.data.automation.PublishAutomationScheduler
 import com.example.data.model.AiShortProject
 import com.example.data.model.GeneratedUgcScript
+import com.example.data.model.IntegrationSettings
 import com.example.data.model.ProductResearchResult
+import com.example.data.model.PublishAutomationJob
+import com.example.data.model.PublishMetadataDraft
 import com.example.data.model.UgcAvatar
 import com.example.data.model.UiState
+import com.example.data.preferences.SettingsDataStore
 import com.example.data.repository.OpenShortsFirestoreRepository
+import com.example.ui.components.PublishAutomationRequest
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
@@ -44,7 +50,9 @@ enum class AiShortsStep(val index: Int, val label: String) {
 class AiShortsViewModel(
     private val currentUserId: String,
     private val firestoreRepo: OpenShortsFirestoreRepository,
-    private val aiRepo: OpenShortsAiRepository
+    private val aiRepo: OpenShortsAiRepository,
+    private val settingsStore: SettingsDataStore,
+    private val scheduler: PublishAutomationScheduler
 ) : ViewModel() {
 
     private val _step = MutableStateFlow(AiShortsStep.SETUP)
@@ -64,6 +72,15 @@ class AiShortsViewModel(
 
     private val _finalSaveState = MutableStateFlow<UiState<AiShortProject>>(UiState.Idle)
     val finalSaveState: StateFlow<UiState<AiShortProject>> = _finalSaveState.asStateFlow()
+
+    private val _isAutomatingPost = MutableStateFlow(false)
+    val isAutomatingPost: StateFlow<Boolean> = _isAutomatingPost.asStateFlow()
+
+    private val _automationFeedback = MutableStateFlow<String?>(null)
+    val automationFeedback: StateFlow<String?> = _automationFeedback.asStateFlow()
+
+    val settings: StateFlow<IntegrationSettings> = settingsStore.settingsFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), IntegrationSettings())
 
     val savedAvatars: StateFlow<List<UgcAvatar>> = firestoreRepo.observeAvatars(currentUserId)
         .catch { error ->
@@ -247,6 +264,68 @@ class AiShortsViewModel(
         _finalSaveState.value = UiState.Idle
     }
 
+    fun clearAutomationFeedback() {
+        _automationFeedback.value = null
+    }
+
+    suspend fun optimizePublishMetadata(
+        project: AiShortProject,
+        titleHint: String,
+        ytDesc: String,
+        igCaption: String
+    ): Result<PublishMetadataDraft> {
+        return try {
+            val draft = aiRepo.generatePublishMetadata(
+                titleHint = titleHint.ifBlank { project.scriptTitle },
+                contextText = igCaption.ifBlank { project.hookText.orEmpty() },
+                transcript = ytDesc.ifBlank { project.fullNarration },
+                language = if (project.language == "es") "Spanish" else "English"
+            )
+            Result.success(draft)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun automateAiShortPublish(project: AiShortProject, request: PublishAutomationRequest) {
+        viewModelScope.launch {
+            _isAutomatingPost.value = true
+            val isScheduled = !request.scheduledIso.isNullOrBlank()
+            val job = PublishAutomationJob(
+                userId = currentUserId,
+                sourceType = "ai_short",
+                sourceId = project.id.takeIf { it.isNotBlank() },
+                youtubeEnabled = request.youtubeEnabled,
+                instagramEnabled = request.instagramEnabled,
+                youtubeTitle = request.youtubeTitle,
+                youtubeDescription = request.youtubeDescription,
+                youtubePrivacy = request.youtubePrivacy,
+                instagramCaption = request.instagramCaption,
+                videoUri = request.videoUri,
+                scheduledIso = request.scheduledIso,
+                status = if (isScheduled) "scheduled" else "queued",
+                resultMessage = if (isScheduled) "Scheduled AI Short (${request.scheduledIso})" else "Queued AI Short for upload"
+            )
+            val res = firestoreRepo.createPublishJob(currentUserId, job)
+            _isAutomatingPost.value = false
+            res.fold(
+                onSuccess = { pubId ->
+                    scheduler.enqueuePublishJob(currentUserId, pubId, request.scheduledIso)
+                    _automationFeedback.value = if (isScheduled) {
+                        "Scheduled AI Short post for YouTube & Instagram."
+                    } else {
+                        "Queued AI Short auto-post to YouTube & Instagram."
+                    }
+                },
+                onFailure = { e ->
+                    _automationFeedback.value = e.localizedMessage ?: "Failed to queue AI Short."
+                }
+            )
+        }
+    }
+
     companion object {
         fun provideFactory(currentUserId: String): ViewModelProvider.Factory = viewModelFactory {
             initializer {
@@ -255,7 +334,9 @@ class AiShortsViewModel(
                 AiShortsViewModel(
                     currentUserId = currentUserId,
                     firestoreRepo = OpenShortsFirestoreRepository(db),
-                    aiRepo = OpenShortsAiRepository(app)
+                    aiRepo = OpenShortsAiRepository(app),
+                    settingsStore = SettingsDataStore(app),
+                    scheduler = PublishAutomationScheduler(app)
                 )
             }
         }

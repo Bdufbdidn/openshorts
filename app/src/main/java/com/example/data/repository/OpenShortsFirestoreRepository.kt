@@ -7,6 +7,7 @@ import com.example.data.firebase.handleFirestoreError
 import com.example.data.model.AiShortProject
 import com.example.data.model.ClipJob
 import com.example.data.model.GeneratedClip
+import com.example.data.model.PublishAutomationJob
 import com.example.data.model.UgcAvatar
 import com.example.data.model.YoutubeStudioProject
 import com.google.firebase.Firebase
@@ -232,6 +233,36 @@ class OpenShortsFirestoreRepository(
         }
     }
 
+    suspend fun updateClipTrim(
+        userId: String,
+        jobId: String,
+        clipId: String,
+        startSec: Double,
+        endSec: Double
+    ): Result<Unit> {
+        val docPath = "users/$userId/clip_jobs/$jobId/clips/$clipId"
+        return try {
+            val uid = requireUserId()
+            check(uid == userId) { "Signed-in user changed; refusing cross-user write." }
+            require(jobId.isNotBlank() && clipId.isNotBlank())
+            val safeStart = startSec.coerceAtLeast(0.0)
+            val safeEnd = endSec.coerceAtLeast(safeStart + 1.0)
+            db.document(docPath).update(
+                mapOf(
+                    "startSec" to safeStart,
+                    "endSec" to safeEnd,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docPath)
+            Result.failure(e)
+        }
+    }
+
     suspend fun deleteClipJob(userId: String, jobId: String): Result<Unit> {
         val docPath = "users/$userId/clip_jobs/$jobId"
         return try {
@@ -410,6 +441,107 @@ class OpenShortsFirestoreRepository(
 
     suspend fun deleteAvatar(userId: String, avatarId: String): Result<Unit> {
         val docPath = "users/$userId/avatars/$avatarId"
+        return try {
+            val uid = requireUserId()
+            check(uid == userId)
+            db.document(docPath).delete().await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    // --- Publish Automation Queue (YouTube & Instagram) ---
+
+    fun observePublishJobs(userId: String): Flow<List<PublishAutomationJob>> = flow {
+        val uid = requireUserId()
+        check(uid == userId) { "Signed-in user changed; refusing cross-user read." }
+        val path = "users/$uid/publish_jobs"
+        emitAll(
+            db.collection("users").document(uid).collection("publish_jobs")
+                .snapshots()
+                .map { snapshot ->
+                    snapshot.toObjects(
+                        PublishAutomationJob::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    ).sortedByDescending { it.createdAt?.seconds ?: 0L }
+                }
+                .catch { error -> unwrapFirestoreCatch(error, path, uid) }
+        )
+    }
+
+    suspend fun getPublishJob(userId: String, jobId: String): Result<PublishAutomationJob?> {
+        val docPath = "users/$userId/publish_jobs/$jobId"
+        return try {
+            val uid = requireUserId()
+            check(uid == userId) { "Signed-in user changed; refusing cross-user read." }
+            require(jobId.isNotBlank())
+            val snap = db.document(docPath).get().await()
+            val item = snap.toObject(
+                PublishAutomationJob::class.java,
+                DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+            )
+            Result.success(item)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.GET, docPath)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun createPublishJob(userId: String, job: PublishAutomationJob): Result<String> {
+        var docPath = "users/$userId/publish_jobs"
+        return try {
+            val uid = requireUserId()
+            check(uid == userId) { "Signed-in user changed; refusing cross-user write." }
+            require(job.youtubeEnabled || job.instagramEnabled) { "Select YouTube and/or Instagram." }
+            val docRef = db.collection("users").document(uid).collection("publish_jobs").document()
+            docPath = docRef.path
+            docRef.set(job.copy(userId = uid).toCreateMap()).await()
+            Result.success(docRef.id)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updatePublishJobStatus(
+        userId: String,
+        jobId: String,
+        status: String,
+        resultMessage: String? = null
+    ): Result<Unit> {
+        val docPath = "users/$userId/publish_jobs/$jobId"
+        return try {
+            val uid = requireUserId()
+            check(uid == userId) { "Signed-in user changed; refusing cross-user write." }
+            require(jobId.isNotBlank())
+            val safeStatus = if (status in listOf("queued", "scheduled", "uploading", "published", "failed")) status else "queued"
+            val payload = mutableMapOf<String, Any>(
+                "status" to safeStatus,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            if (resultMessage != null) {
+                payload["resultMessage"] = resultMessage.take(1000)
+            }
+            db.document(docPath).update(payload).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, docPath)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deletePublishJob(userId: String, jobId: String): Result<Unit> {
+        val docPath = "users/$userId/publish_jobs/$jobId"
         return try {
             val uid = requireUserId()
             check(uid == userId)

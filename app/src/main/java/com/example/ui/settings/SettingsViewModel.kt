@@ -40,6 +40,34 @@ class SettingsViewModel(
         }
     }
 
+    fun saveAutomationSettings(
+        autoPostEnabled: Boolean,
+        defaultAutoYouTube: Boolean,
+        defaultAutoInstagram: Boolean,
+        defaultYoutubePrivacy: String,
+        defaultPostHourUtc: Int,
+        includeTranscriptInCaptions: Boolean
+    ) {
+        viewModelScope.launch {
+            settingsStore.saveAutomationSettings(
+                autoPostEnabled = autoPostEnabled,
+                defaultAutoYouTube = defaultAutoYouTube,
+                defaultAutoInstagram = defaultAutoInstagram,
+                defaultYoutubePrivacy = defaultYoutubePrivacy,
+                defaultPostHourUtc = defaultPostHourUtc,
+                includeTranscriptInCaptions = includeTranscriptInCaptions
+            )
+            _saveMessage.value = "Channel automation defaults saved."
+        }
+    }
+
+    fun saveDirectInstagram(userId: String, accessToken: String) {
+        viewModelScope.launch {
+            settingsStore.saveDirectInstagram(userId, accessToken)
+            _saveMessage.value = "Direct Instagram Graph API credentials saved."
+        }
+    }
+
     fun fetchUploadPostAccounts(apiKey: String) {
         viewModelScope.launch {
             _accountsState.value = UiState.Loading

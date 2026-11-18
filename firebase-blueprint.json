@@ -6,7 +6,7 @@
       "type": "object",
       "properties": {
         "userId": { "type": "string", "description": "Authenticated owner UID" },
-        "sourceType": { "type": "string", "enum": ["video", "url"] },
+        "sourceType": { "type": "string", "enum": ["video", "url", "live"] },
         "sourceLabel": { "type": "string", "description": "Video filename or URL" },
         "videoUri": { "type": "string", "description": "Local content URI if picked from device" },
         "durationSec": { "type": "number", "description": "Video duration in seconds" },
@@ -114,6 +114,29 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["userId", "name", "prompt", "gender", "createdAt", "updatedAt"]
+    },
+    "PublishAutomationJob": {
+      "title": "PublishAutomationJob",
+      "description": "An automated YouTube Shorts and Instagram Reels publish/schedule job with title and platform captions.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "sourceType": { "type": "string", "enum": ["clip", "ai_short", "youtube_studio", "custom"] },
+        "sourceId": { "type": "string" },
+        "youtubeEnabled": { "type": "boolean" },
+        "instagramEnabled": { "type": "boolean" },
+        "youtubeTitle": { "type": "string" },
+        "youtubeDescription": { "type": "string" },
+        "youtubePrivacy": { "type": "string", "enum": ["public", "unlisted", "private"] },
+        "instagramCaption": { "type": "string" },
+        "videoUri": { "type": "string" },
+        "scheduledIso": { "type": "string" },
+        "status": { "type": "string", "enum": ["queued", "scheduled", "uploading", "published", "failed"] },
+        "resultMessage": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "sourceType", "youtubeEnabled", "instagramEnabled", "youtubeTitle", "youtubeDescription", "youtubePrivacy", "instagramCaption", "status", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -136,6 +159,10 @@
     "/users/{userId}/avatars/{avatarId}": {
       "schema": { "$ref": "#/entities/UgcAvatar" },
       "description": "User-owned AI actor portraits in UGC Gallery"
+    },
+    "/users/{userId}/publish_jobs/{jobId}": {
+      "schema": { "$ref": "#/entities/PublishAutomationJob" },
+      "description": "User-owned automated YouTube and Instagram publish/schedule queue items"
     }
   }
 }

@@ -6,81 +6,46 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material.icons.filled.EditNote
-import androidx.compose.material.icons.filled.Link
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Subtitles
-import androidx.compose.material.icons.filled.Translate
-import androidx.compose.material.icons.filled.VideoFile
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.data.model.ClipJob
+import com.example.data.local.EditingSession
+import com.example.data.media.Media3VideoFilterFactory
 import com.example.data.model.GeneratedClip
 import com.example.data.model.UiState
+import com.example.data.model.YouTubeSearchResult
+import com.example.ui.captions.CaptionExportInitArgs
 import com.example.ui.components.ErrorBanner
 import com.example.ui.components.ScannerProcessingCard
-import com.example.ui.components.ScoreBadge
-import com.example.ui.components.ShortClipPreviewPlayer
-import com.example.ui.components.StudioGlassCard
-import com.example.ui.components.VideoPlayer
-import com.example.ui.components.copyToClipboard
-import com.example.ui.components.formatSeconds
 
-private enum class ActiveClipSheet {
-    SUBTITLES, HOOK, TRANSLATE, POST
-}
-
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ClipGeneratorScreen(
     currentUserId: String,
+    pendingResumeSessionId: String? = null,
+    onConsumedPendingResume: () -> Unit = {},
+    onOpenAutomationQueue: () -> Unit = {},
+    onOpenBatchExportQueue: () -> Unit = {},
+    onOpenCaptionExport: (CaptionExportInitArgs) -> Unit = {},
     viewModel: ClipGeneratorViewModel = viewModel(
         key = currentUserId,
         factory = ClipGeneratorViewModel.provideFactory(currentUserId)
@@ -94,10 +59,54 @@ fun ClipGeneratorScreen(
     val editorFeedback by viewModel.editorFeedback.collectAsStateWithLifecycle()
     val isEditorBusy by viewModel.isEditorBusy.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val pendingAutomationCount by viewModel.pendingAutomationCount.collectAsStateWithLifecycle()
+    val pendingBatchExportCount by viewModel.pendingBatchExportCount.collectAsStateWithLifecycle()
+    val youtubeSearchState by viewModel.youtubeSearchState.collectAsStateWithLifecycle()
+    val trimChatMessages by viewModel.trimChatMessages.collectAsStateWithLifecycle()
+    val isTrimChatBusy by viewModel.isTrimChatBusy.collectAsStateWithLifecycle()
+    val editingSessions by viewModel.editingSessions.collectAsStateWithLifecycle()
+    val activeLocalSessionId by viewModel.activeLocalSessionId.collectAsStateWithLifecycle()
 
     var sourceMode by remember { mutableStateOf("video") }
     var pickedVideoUri by remember { mutableStateOf<Uri?>(null) }
+    var sourceTrimStartMs by remember { mutableLongStateOf(0L) }
+    var sourceTrimEndMs by remember { mutableLongStateOf(60_000L) }
+    var sourceFilterStack by remember { mutableStateOf<List<String>>(emptyList()) }
+    var sourceFilterContrast by remember { mutableFloatStateOf(0f) }
+    var sourceFilterSaturation by remember { mutableFloatStateOf(0f) }
+    var sourceFilterBrightness by remember { mutableFloatStateOf(0f) }
+    val sourceFilterKey = remember(
+        sourceFilterStack,
+        sourceFilterContrast,
+        sourceFilterSaturation,
+        sourceFilterBrightness
+    ) {
+        Media3VideoFilterFactory.cacheKey(
+            sourceFilterStack,
+            sourceFilterContrast,
+            sourceFilterSaturation,
+            sourceFilterBrightness
+        )
+    }
+    val sourceVideoEffects = remember(sourceFilterKey) {
+        Media3VideoFilterFactory.buildVideoEffects(
+            sourceFilterStack,
+            sourceFilterContrast,
+            sourceFilterSaturation,
+            sourceFilterBrightness
+        )
+    }
+
     var urlInput by remember { mutableStateOf("") }
+    var selectedYoutubeVideo by remember { mutableStateOf<YouTubeSearchResult?>(null) }
+    var urlTrimStartSec by remember { mutableDoubleStateOf(0.0) }
+    var urlTrimEndSec by remember { mutableDoubleStateOf(30.0) }
+
+    var liveStreamUrlInput by remember { mutableStateOf("") }
+    var liveLookbackMinutes by remember { mutableIntStateOf(15) }
+    var selectedLiveSkill by remember { mutableStateOf(DEFAULT_LIVE_SHORTS_SKILLS.first()) }
+    var liveCueNotes by remember { mutableStateOf("") }
+
     var guidanceInput by remember { mutableStateOf("") }
     var maxClips by remember { mutableFloatStateOf(4f) }
 
@@ -105,11 +114,60 @@ fun ClipGeneratorScreen(
     var activeSheet by remember { mutableStateOf<ActiveClipSheet?>(null) }
     var showScheduleWeek by remember { mutableStateOf(false) }
 
+    var showYoutubeSearchSheet by remember { mutableStateOf(false) }
+    var searchLiveOnly by remember { mutableStateOf(false) }
+    var showSourceTrimChatSheet by remember { mutableStateOf(false) }
+    var showSavedSessionsSheet by remember { mutableStateOf(false) }
+
+    fun applyClipStudioSession(session: EditingSession) {
+        sourceMode = session.sourceMode.ifBlank { "video" }
+        pickedVideoUri = session.videoUri?.takeIf { it.isNotBlank() && session.sourceMode == "video" }
+            ?.let { Uri.parse(it) }
+        sourceTrimStartMs = session.trimStartMs.coerceAtLeast(0L)
+        sourceTrimEndMs = session.trimEndMs.coerceAtLeast(session.trimStartMs + 1000L)
+
+        when (session.sourceMode) {
+            "url" -> {
+                urlInput = session.sourceLabel
+                urlTrimStartSec = session.trimStartMs / 1000.0
+                urlTrimEndSec = (session.trimEndMs / 1000.0).coerceAtLeast(urlTrimStartSec + 1.0)
+                selectedYoutubeVideo = buildRestoredSessionVideo(session, liveBroadcast = false)
+                guidanceInput = session.guidanceNotes
+            }
+            "live" -> {
+                liveStreamUrlInput = session.sourceLabel
+                liveLookbackMinutes = session.liveLookbackMinutes.coerceIn(5, 60)
+                selectedLiveSkill = DEFAULT_LIVE_SHORTS_SKILLS.firstOrNull { it.id == session.liveSkillId }
+                    ?: DEFAULT_LIVE_SHORTS_SKILLS.first()
+                liveCueNotes = session.guidanceNotes
+                selectedYoutubeVideo = buildRestoredSessionVideo(session, liveBroadcast = true)
+            }
+            else -> guidanceInput = session.guidanceNotes
+        }
+
+        maxClips = session.targetClipsCount.coerceIn(3, 8).toFloat()
+        sourceFilterStack = session.burnStyle.filterStack
+        sourceFilterContrast = session.burnStyle.filterContrast
+        sourceFilterSaturation = session.burnStyle.filterSaturation
+        sourceFilterBrightness = session.burnStyle.filterBrightness
+        viewModel.markLocalSessionResumed(session)
+    }
+
+    LaunchedEffect(pendingResumeSessionId) {
+        val resumeId = pendingResumeSessionId
+        if (!resumeId.isNullOrBlank()) {
+            viewModel.getLocalSessionById(resumeId)?.let(::applyClipStudioSession)
+            onConsumedPendingResume()
+        }
+    }
+
     val videoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
             pickedVideoUri = uri
+            sourceTrimStartMs = 0L
+            sourceTrimEndMs = 60_000L
             viewModel.clearGenerationError()
         }
     }
@@ -136,243 +194,219 @@ fun ClipGeneratorScreen(
                 modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text("Clip Generator", style = MaterialTheme.typography.headlineMedium)
-                Text(
-                    "Turn long videos or URLs into 9:16 viral shorts with AI hooks, animated captions & 30+ language dubbing.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                ClipGeneratorHeaderSection(
+                    editingSessionsCount = editingSessions.size,
+                    pendingAutomationCount = pendingAutomationCount,
+                    pendingBatchExportCount = pendingBatchExportCount,
+                    onOpenSavedSessions = { showSavedSessionsSheet = true },
+                    onOpenAutomationQueue = onOpenAutomationQueue,
+                    onOpenCaptionExport = {
+                        onOpenCaptionExport(
+                            buildCaptionExportArgsForSource(
+                                pickedVideoUri = pickedVideoUri,
+                                fallbackVideoUri = selectedJob?.videoUri,
+                                sourceTrimStartMs = sourceTrimStartMs,
+                                sourceTrimEndMs = sourceTrimEndMs,
+                                filterStack = sourceFilterStack,
+                                filterContrast = sourceFilterContrast,
+                                filterSaturation = sourceFilterSaturation,
+                                filterBrightness = sourceFilterBrightness
+                            )
+                        )
+                    },
+                    onOpenBatchExportQueue = onOpenBatchExportQueue
                 )
 
-                StudioGlassCard {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FilterChip(
-                                selected = sourceMode == "video",
-                                onClick = { sourceMode = "video" },
-                                leadingIcon = { Icon(Icons.Default.VideoFile, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                label = { Text("Device Video") }
+                ClipSourceInputCard(
+                    sourceMode = sourceMode,
+                    onSourceModeChange = { sourceMode = it },
+                    pickedVideoUri = pickedVideoUri,
+                    onPickVideo = {
+                        videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+                    },
+                    sourceTrimStartMs = sourceTrimStartMs,
+                    sourceTrimEndMs = sourceTrimEndMs,
+                    onSourceTrimChange = { s, e ->
+                        sourceTrimStartMs = s
+                        sourceTrimEndMs = e
+                    },
+                    sourceFilterStack = sourceFilterStack,
+                    sourceFilterContrast = sourceFilterContrast,
+                    sourceFilterSaturation = sourceFilterSaturation,
+                    sourceFilterBrightness = sourceFilterBrightness,
+                    sourceVideoEffects = sourceVideoEffects,
+                    sourceFilterKey = sourceFilterKey,
+                    onFilterStackChange = { sourceFilterStack = it },
+                    onToneAdjustChange = { c, s, b ->
+                        sourceFilterContrast = c
+                        sourceFilterSaturation = s
+                        sourceFilterBrightness = b
+                    },
+                    onOpenSourceTrimChat = {
+                        viewModel.resetTrimChat()
+                        showSourceTrimChatSheet = true
+                    },
+                    onAddSourceTrimToBatch = {
+                        val uri = pickedVideoUri ?: return@ClipSourceInputCard
+                        viewModel.addTrimmedClipToBatch(
+                            title = uri.lastPathSegment ?: "Trimmed Clip",
+                            videoUriString = uri.toString(),
+                            trimStartMs = sourceTrimStartMs,
+                            trimEndMs = sourceTrimEndMs,
+                            filterStack = sourceFilterStack,
+                            filterContrast = sourceFilterContrast,
+                            filterSaturation = sourceFilterSaturation,
+                            filterBrightness = sourceFilterBrightness
+                        )
+                    },
+                    urlInput = urlInput,
+                    onUrlInputChange = {
+                        urlInput = it
+                        viewModel.clearGenerationError()
+                    },
+                    onOpenYoutubeSearch = { liveOnly ->
+                        searchLiveOnly = liveOnly
+                        showYoutubeSearchSheet = true
+                    },
+                    selectedYoutubeVideo = selectedYoutubeVideo,
+                    urlTrimStartSec = urlTrimStartSec,
+                    urlTrimEndSec = urlTrimEndSec,
+                    onOpenYoutubeTrimChat = {
+                        viewModel.resetTrimChat()
+                        showSourceTrimChatSheet = true
+                    },
+                    liveStreamUrlInput = liveStreamUrlInput,
+                    onLiveStreamUrlChange = {
+                        liveStreamUrlInput = it
+                        viewModel.clearGenerationError()
+                    },
+                    selectedLiveSkill = selectedLiveSkill,
+                    onSelectLiveSkill = { selectedLiveSkill = it },
+                    liveLookbackMinutes = liveLookbackMinutes,
+                    onLiveLookbackChange = { liveLookbackMinutes = it },
+                    liveCueNotes = liveCueNotes,
+                    onLiveCueNotesChange = { liveCueNotes = it },
+                    guidanceInput = guidanceInput,
+                    onGuidanceInputChange = { guidanceInput = it },
+                    maxClips = maxClips,
+                    onMaxClipsChange = { maxClips = it },
+                    generationState = generationState,
+                    onGenerateClick = {
+                        if (sourceMode == "live") {
+                            viewModel.analyzeLiveStreamForShorts(
+                                liveStreamUrl = liveStreamUrlInput.trim(),
+                                lookbackMinutes = liveLookbackMinutes,
+                                skillPreset = selectedLiveSkill,
+                                liveCueNotes = liveCueNotes,
+                                maxClips = maxClips.toInt()
                             )
-                            FilterChip(
-                                selected = sourceMode == "url",
-                                onClick = { sourceMode = "url" },
-                                leadingIcon = { Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                label = { Text("YouTube / URL") }
-                            )
-                        }
-
-                        if (sourceMode == "video") {
-                            OutlinedButton(
-                                onClick = {
-                                    videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(52.dp)
-                                    .testTag("pick_video_button"),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Icon(Icons.Default.VideoFile, contentDescription = "Pick video from device")
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = pickedVideoUri?.lastPathSegment ?: "Select Video via Android Photo Picker",
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            if (pickedVideoUri != null) {
-                                VideoPlayer(
-                                    uri = pickedVideoUri,
-                                    autoplay = true,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            }
                         } else {
-                            OutlinedTextField(
-                                value = urlInput,
-                                onValueChange = {
-                                    urlInput = it
-                                    viewModel.clearGenerationError()
-                                },
-                                label = { Text("YouTube or Video URL") },
-                                placeholder = { Text("https://youtube.com/watch?v=...") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth().testTag("video_url_input")
+                            val label = if (sourceMode == "video") pickedVideoUri?.lastPathSegment ?: "" else urlInput.trim()
+                            val combinedGuidance = buildCombinedClipGuidance(
+                                sourceMode, selectedYoutubeVideo, urlTrimStartSec, urlTrimEndSec,
+                                sourceTrimStartMs, sourceTrimEndMs, guidanceInput
                             )
-                        }
-
-                        OutlinedTextField(
-                            value = guidanceInput,
-                            onValueChange = { guidanceInput = it },
-                            label = { Text("AI Moment Guidance (Optional)") },
-                            placeholder = { Text("e.g. Focus on founder story & bold contrarian takes") },
-                            maxLines = 2,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Text(
-                            "Target Clips: ${maxClips.toInt()} viral moments",
-                            style = MaterialTheme.typography.labelLarge
-                        )
-                        Slider(
-                            value = maxClips,
-                            onValueChange = { maxClips = it },
-                            valueRange = 3f..8f,
-                            steps = 4
-                        )
-
-                        Button(
-                            onClick = {
-                                val label = if (sourceMode == "video") {
-                                    pickedVideoUri?.lastPathSegment ?: ""
-                                } else urlInput.trim()
-                                viewModel.analyzeAndGenerateClips(
-                                    sourceType = sourceMode,
-                                    sourceLabel = label,
-                                    videoUri = if (sourceMode == "video") pickedVideoUri else null,
-                                    clipGuidance = guidanceInput,
-                                    maxClips = maxClips.toInt()
-                                )
-                            },
-                            enabled = generationState !is UiState.Loading,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(52.dp)
-                                .testTag("generate_clips_button"),
-                            shape = RoundedCornerShape(14.dp)
-                        ) {
-                            if (generationState is UiState.Loading) {
-                                CircularProgressIndicator(Modifier.size(20.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
-                                Spacer(Modifier.width(10.dp))
-                                Text("Detecting Viral Moments...")
-                            } else {
-                                Icon(Icons.Default.AutoAwesome, contentDescription = null)
-                                Spacer(Modifier.width(8.dp))
-                                Text("Analyze & Generate Clips")
-                            }
+                            viewModel.analyzeAndGenerateClips(
+                                sourceType = sourceMode,
+                                sourceLabel = label,
+                                videoUri = if (sourceMode == "video") pickedVideoUri else null,
+                                clipGuidance = combinedGuidance,
+                                maxClips = maxClips.toInt()
+                            )
                         }
                     }
-                }
+                )
             }
         }
 
         if (generationState is UiState.Loading) {
             item {
                 ScannerProcessingCard(
-                    title = "Gemini 3.8 Flash Analyzing Frames",
-                    subtitle = "Scoring hooks, pacing, and 9:16 vertical cuts...",
+                    title = if (sourceMode == "live") "Live Shorts Skill Active (${selectedLiveSkill.label})" else "Gemini 3.8 Flash Analyzing Frames",
+                    subtitle = if (sourceMode == "live") "Scanning last ${liveLookbackMinutes}m live DVR window for viral 9:16 moments..." else "Scoring hooks, pacing, and 9:16 vertical cuts...",
                     modifier = Modifier.widthIn(max = 760.dp)
                 )
             }
         }
 
         if (generationState is UiState.Error) {
-            item {
-                ErrorBanner(
-                    message = (generationState as UiState.Error).message,
-                    modifier = Modifier.widthIn(max = 760.dp)
-                )
-            }
+            item { ErrorBanner((generationState as UiState.Error).message, modifier = Modifier.widthIn(max = 760.dp)) }
         }
-
         if (jobsState is UiState.Error) {
-            item {
-                ErrorBanner(
-                    message = (jobsState as UiState.Error).message,
-                    modifier = Modifier.widthIn(max = 760.dp)
-                )
-            }
+            item { ErrorBanner((jobsState as UiState.Error).message, modifier = Modifier.widthIn(max = 760.dp)) }
         }
 
-        // Saved Jobs Strip
         if (jobs.isNotEmpty()) {
             item {
-                Column(modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Recent Clip Projects", style = MaterialTheme.typography.titleLarge)
-                        if (clips.isNotEmpty()) {
-                            OutlinedButton(
-                                onClick = { showScheduleWeek = true },
-                                modifier = Modifier.testTag("schedule_week_button")
-                            ) {
-                                Icon(Icons.Default.CalendarMonth, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Schedule Week")
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(jobs, key = { it.id }) { job ->
-                            FilterChip(
-                                selected = job.id == selectedJobId,
-                                onClick = { viewModel.selectJob(job.id) },
-                                label = {
-                                    Text(
-                                        "${job.sourceLabel.take(22)} (${job.clipsCount})",
-                                        maxLines = 1
-                                    )
-                                },
-                                trailingIcon = {
-                                    IconButton(
-                                        onClick = { viewModel.deleteJob(job.id) },
-                                        modifier = Modifier.size(20.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.Default.DeleteOutline,
-                                            contentDescription = "Delete project",
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
-                                }
-                            )
-                        }
-                    }
-                }
+                RecentClipProjectsSection(
+                    jobs = jobs,
+                    selectedJobId = selectedJobId,
+                    selectedJob = selectedJob,
+                    clips = clips,
+                    onSelectJob = viewModel::selectJob,
+                    onDeleteJob = viewModel::deleteJob,
+                    onBatchAllClips = {
+                        viewModel.addAllClipsToBatch(
+                            clips = clips,
+                            videoUriString = selectedJob?.videoUri,
+                            filterStack = sourceFilterStack,
+                            filterContrast = sourceFilterContrast,
+                            filterSaturation = sourceFilterSaturation,
+                            filterBrightness = sourceFilterBrightness,
+                            startImmediately = false
+                        )
+                    },
+                    onScheduleWeek = { showScheduleWeek = true },
+                    modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth()
+                )
             }
         }
 
         if (selectedJob != null && !selectedJob.summary.isNullOrBlank()) {
-            item {
-                StudioGlassCard(modifier = Modifier.widthIn(max = 760.dp)) {
-                    Text("AI Video Summary", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.height(4.dp))
-                    Text(selectedJob.summary, style = MaterialTheme.typography.bodyMedium)
-                }
-            }
+            item { ClipJobSummaryCard(job = selectedJob, modifier = Modifier.widthIn(max = 760.dp)) }
         }
 
         if (clipsState is UiState.Error) {
-            item {
-                ErrorBanner(
-                    message = (clipsState as UiState.Error).message,
-                    modifier = Modifier.widthIn(max = 760.dp)
-                )
-            }
+            item { ErrorBanner((clipsState as UiState.Error).message, modifier = Modifier.widthIn(max = 760.dp)) }
         }
 
         items(clips, key = { it.id }) { clip ->
             GeneratedClipResultCard(
                 clip = clip,
                 videoUriString = selectedJob?.videoUri,
-                onEditSubtitles = {
+                onTrimAndChat = {
+                    viewModel.resetTrimChat()
                     editingClip = clip
-                    activeSheet = ActiveClipSheet.SUBTITLES
+                    activeSheet = ActiveClipSheet.TRIM_CHAT
                 },
-                onEditHook = {
-                    editingClip = clip
-                    activeSheet = ActiveClipSheet.HOOK
+                onEditSubtitles = { editingClip = clip; activeSheet = ActiveClipSheet.SUBTITLES },
+                onEditHook = { editingClip = clip; activeSheet = ActiveClipSheet.HOOK },
+                onTranslate = { editingClip = clip; activeSheet = ActiveClipSheet.TRANSLATE },
+                onPost = { editingClip = clip; activeSheet = ActiveClipSheet.POST },
+                onBurnCaptions = {
+                    onOpenCaptionExport(
+                        buildCaptionExportArgsForClip(
+                            clip = clip,
+                            videoUri = selectedJob?.videoUri.orEmpty(),
+                            filterStack = sourceFilterStack,
+                            filterContrast = sourceFilterContrast,
+                            filterSaturation = sourceFilterSaturation,
+                            filterBrightness = sourceFilterBrightness
+                        )
+                    )
                 },
-                onTranslate = {
-                    editingClip = clip
-                    activeSheet = ActiveClipSheet.TRANSLATE
-                },
-                onPost = {
-                    editingClip = clip
-                    activeSheet = ActiveClipSheet.POST
+                onAddToBatch = {
+                    viewModel.addTrimmedClipToBatch(
+                        title = clip.youtubeTitle,
+                        videoUriString = selectedJob?.videoUri.orEmpty(),
+                        trimStartMs = (clip.startSec * 1000.0).toLong().coerceAtLeast(0L),
+                        trimEndMs = (clip.endSec * 1000.0).toLong().coerceAtLeast(1000L),
+                        clip = clip,
+                        filterStack = sourceFilterStack,
+                        filterContrast = sourceFilterContrast,
+                        filterSaturation = sourceFilterSaturation,
+                        filterBrightness = sourceFilterBrightness
+                    )
                 },
                 modifier = Modifier.widthIn(max = 760.dp)
             )
@@ -380,176 +414,101 @@ fun ClipGeneratorScreen(
     }
 
     val currentClip = editingClip?.let { target -> clips.firstOrNull { it.id == target.id } ?: target }
-    if (currentClip != null) {
-        when (activeSheet) {
-            ActiveClipSheet.SUBTITLES -> SubtitleEditorSheet(
-                clip = currentClip,
-                isBusy = isEditorBusy,
-                onDismiss = { activeSheet = null },
-                onSave = { pos, anim, font, colorHex, highlightHex, text ->
-                    viewModel.saveSubtitles(currentClip, pos, anim, font, colorHex, highlightHex, text)
-                    activeSheet = null
-                }
-            )
-            ActiveClipSheet.HOOK -> HookEditorSheet(
-                clip = currentClip,
-                isBusy = isEditorBusy,
-                onDismiss = { activeSheet = null },
-                onSave = { text, pos, size, anim, dur ->
-                    viewModel.saveHook(currentClip, text, pos, size, anim, dur)
-                    activeSheet = null
-                }
-            )
-            ActiveClipSheet.TRANSLATE -> TranslateDubSheet(
-                clip = currentClip,
-                isBusy = isEditorBusy,
-                onDismiss = { activeSheet = null },
-                onTranslate = { lang ->
-                    viewModel.translateAndDubClip(currentClip, lang)
-                    activeSheet = null
-                }
-            )
-            ActiveClipSheet.POST -> PostOrScheduleSheet(
-                clip = currentClip,
-                settings = settings,
-                isBusy = isEditorBusy,
-                onDismiss = { activeSheet = null },
-                onPublishUploadPost = { title, platforms, iso ->
-                    viewModel.postClipViaUploadPost(title, platforms, iso)
-                    activeSheet = null
-                }
-            )
-            null -> Unit
-        }
-    }
+    ClipEditorModalHost(
+        activeSheet = activeSheet,
+        currentClip = currentClip,
+        selectedJob = selectedJob,
+        selectedYoutubeVideo = selectedYoutubeVideo,
+        trimChatMessages = trimChatMessages,
+        isTrimChatBusy = isTrimChatBusy,
+        isEditorBusy = isEditorBusy,
+        settings = settings,
+        sourceFilterStack = sourceFilterStack,
+        sourceFilterContrast = sourceFilterContrast,
+        sourceFilterSaturation = sourceFilterSaturation,
+        sourceFilterBrightness = sourceFilterBrightness,
+        onFiltersChanged = { stack, c, s, b ->
+            sourceFilterStack = stack
+            sourceFilterContrast = c
+            sourceFilterSaturation = s
+            sourceFilterBrightness = b
+        },
+        viewModel = viewModel,
+        onOpenCaptionExport = onOpenCaptionExport,
+        onOpenYouTubeSearch = { liveOnly ->
+            searchLiveOnly = liveOnly
+            showYoutubeSearchSheet = true
+        },
+        onDismissSheet = { activeSheet = null }
+    )
 
-    if (showScheduleWeek) {
-        ScheduleWeekSheet(
-            clips = clips,
-            isBusy = isEditorBusy,
-            onDismiss = { showScheduleWeek = false },
-            onScheduleWeek = { platforms, date, hour ->
-                viewModel.scheduleWeekViaUploadPost(clips, platforms, date, hour)
-                showScheduleWeek = false
+    ClipUtilityModalsHost(
+        showSourceTrimChatSheet = showSourceTrimChatSheet,
+        showYoutubeSearchSheet = showYoutubeSearchSheet,
+        showScheduleWeek = showScheduleWeek,
+        showSavedSessionsSheet = showSavedSessionsSheet,
+        sourceMode = sourceMode,
+        pickedVideoUri = pickedVideoUri,
+        urlInput = urlInput,
+        liveStreamUrlInput = liveStreamUrlInput,
+        selectedYoutubeVideo = selectedYoutubeVideo,
+        sourceTrimStartMs = sourceTrimStartMs,
+        sourceTrimEndMs = sourceTrimEndMs,
+        urlTrimStartSec = urlTrimStartSec,
+        urlTrimEndSec = urlTrimEndSec,
+        guidanceInput = guidanceInput,
+        liveCueNotes = liveCueNotes,
+        selectedLiveSkill = selectedLiveSkill,
+        liveLookbackMinutes = liveLookbackMinutes,
+        maxClips = maxClips,
+        sourceFilterStack = sourceFilterStack,
+        sourceFilterContrast = sourceFilterContrast,
+        sourceFilterSaturation = sourceFilterSaturation,
+        sourceFilterBrightness = sourceFilterBrightness,
+        onFiltersChanged = { stack, c, s, b ->
+            sourceFilterStack = stack
+            sourceFilterContrast = c
+            sourceFilterSaturation = s
+            sourceFilterBrightness = b
+        },
+        searchLiveOnly = searchLiveOnly,
+        youtubeSearchState = youtubeSearchState,
+        trimChatMessages = trimChatMessages,
+        isTrimChatBusy = isTrimChatBusy,
+        isEditorBusy = isEditorBusy,
+        clips = clips,
+        selectedJob = selectedJob,
+        selectedJobId = selectedJobId,
+        editingSessions = editingSessions,
+        activeLocalSessionId = activeLocalSessionId,
+        viewModel = viewModel,
+        onApplyUrlTrim = { s, e -> urlTrimStartSec = s; urlTrimEndSec = e },
+        onApplySourceTrim = { s, e -> sourceTrimStartMs = s; sourceTrimEndMs = e },
+        onSelectYoutubeVideo = { video ->
+            selectedYoutubeVideo = video
+            if (video.liveBroadcast || sourceMode == "live") {
+                liveStreamUrlInput = video.url
+                sourceMode = "live"
+            } else {
+                urlInput = video.url
+                sourceMode = "url"
+                urlTrimStartSec = 0.0
+                urlTrimEndSec = video.durationSec.coerceAtMost(45.0).coerceAtLeast(15.0)
             }
-        )
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun GeneratedClipResultCard(
-    clip: GeneratedClip,
-    videoUriString: String?,
-    onEditSubtitles: () -> Unit,
-    onEditHook: () -> Unit,
-    onTranslate: () -> Unit,
-    onPost: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val context = LocalContext.current
-    StudioGlassCard(modifier = modifier) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Clip #${clip.clipIndex + 1} • ${formatSeconds(clip.startSec)}–${formatSeconds(clip.endSec)}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = clip.youtubeTitle,
-                    style = MaterialTheme.typography.titleLarge,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            Spacer(Modifier.width(8.dp))
-            ScoreBadge(score = clip.viralScore.toInt())
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            ShortClipPreviewPlayer(
-                clip = clip,
-                videoUriString = videoUriString,
-                modifier = Modifier.widthIn(max = 280.dp)
-            )
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        if (!clip.translatedLanguage.isNullOrBlank()) {
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.16f)
-            ) {
-                Text(
-                    text = "Localized: ${clip.translatedLanguage}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-        }
-
-        if (!clip.tiktokCaption.isNullOrBlank()) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = clip.tiktokCaption,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis
-                )
-                IconButton(
-                    onClick = {
-                        copyToClipboard(context, "Caption", clip.tiktokCaption)
-                        Toast.makeText(context, "Caption copied", Toast.LENGTH_SHORT).show()
-                    },
-                    modifier = Modifier.size(48.dp)
-                ) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy caption")
-                }
-            }
-        }
-
-        Spacer(Modifier.height(10.dp))
-
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedButton(onClick = onEditSubtitles, modifier = Modifier.testTag("edit_subtitles_button_${clip.clipIndex}")) {
-                Icon(Icons.Default.Subtitles, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Subtitles")
-            }
-            OutlinedButton(onClick = onEditHook, modifier = Modifier.testTag("edit_hook_button_${clip.clipIndex}")) {
-                Icon(Icons.Default.EditNote, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Hook")
-            }
-            OutlinedButton(onClick = onTranslate, modifier = Modifier.testTag("translate_clip_button_${clip.clipIndex}")) {
-                Icon(Icons.Default.Translate, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Dub / Lang")
-            }
-            Button(onClick = onPost, modifier = Modifier.testTag("post_clip_button_${clip.clipIndex}")) {
-                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Post / Share")
-            }
-        }
-    }
+            viewModel.clearGenerationError()
+            showYoutubeSearchSheet = false
+            viewModel.resetTrimChat()
+            showSourceTrimChatSheet = true
+        },
+        onResumeClipStudioSession = ::applyClipStudioSession,
+        onOpenCaptionExport = onOpenCaptionExport,
+        onOpenYoutubeSearchFromTrim = { liveOnly ->
+            searchLiveOnly = liveOnly
+            showYoutubeSearchSheet = true
+        },
+        onDismissSourceTrim = { showSourceTrimChatSheet = false },
+        onDismissYoutubeSearch = { showYoutubeSearchSheet = false },
+        onDismissScheduleWeek = { showScheduleWeek = false },
+        onDismissSavedSessions = { showSavedSessionsSheet = false }
+    )
 }

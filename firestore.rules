@@ -47,7 +47,7 @@ service cloud.firestore {
     // Entity Validators
     function isValidClipJob(data, userId) {
       return data.userId is string && data.userId == userId &&
-             data.sourceType in ['video', 'url'] &&
+             data.sourceType in ['video', 'url', 'live'] &&
              data.sourceLabel is string && data.sourceLabel.size() >= 1 && data.sourceLabel.size() <= 500 &&
              isOptionalString(data, 'videoUri', 500) &&
              data.durationSec is number && data.durationSec >= 0 &&
@@ -135,6 +135,25 @@ service cloud.firestore {
              isValidTimestamp(data.updatedAt);
     }
 
+    function isValidPublishJob(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             data.sourceType in ['clip', 'ai_short', 'youtube_studio', 'custom'] &&
+             isOptionalString(data, 'sourceId', 128) &&
+             data.youtubeEnabled is bool &&
+             data.instagramEnabled is bool &&
+             (data.youtubeEnabled || data.instagramEnabled) &&
+             data.youtubeTitle is string && data.youtubeTitle.size() >= 1 && data.youtubeTitle.size() <= 150 &&
+             data.youtubeDescription is string && data.youtubeDescription.size() <= 5000 &&
+             data.youtubePrivacy in ['public', 'unlisted', 'private'] &&
+             data.instagramCaption is string && data.instagramCaption.size() <= 2200 &&
+             isOptionalString(data, 'videoUri', 500) &&
+             isOptionalString(data, 'scheduledIso', 40) &&
+             data.status in ['queued', 'scheduled', 'uploading', 'published', 'failed'] &&
+             isOptionalString(data, 'resultMessage', 1000) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
     // Collection Rules
     match /users/{userId} {
       allow read, write: if false;
@@ -185,7 +204,7 @@ service cloud.firestore {
                            incoming().createdAt == existing().createdAt &&
                            isValidGeneratedClip(incoming(), userId, jobId) &&
                            incoming().diff(existing()).affectedKeys().hasOnly([
-                             'youtubeTitle', 'tiktokCaption', 'instagramCaption', 'viralHookText',
+                             'startSec', 'endSec', 'youtubeTitle', 'tiktokCaption', 'instagramCaption', 'viralHookText',
                              'hookPosition', 'hookSize', 'hookAnimation', 'hookDurationSec',
                              'subtitlePosition', 'subtitleAnimation', 'subtitleFont',
                              'subtitleColorHex', 'subtitleHighlightHex', 'subtitleText',
@@ -270,6 +289,40 @@ service cloud.firestore {
                          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'prompt', 'localImagePath', 'updatedAt']);
 
         allow delete: if isOwner(userId) && isValidId(avatarId);
+      }
+
+      match /publish_jobs/{jobId} {
+        allow list: if isOwner(userId);
+        allow get: if isOwner(userId) && isValidId(jobId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(jobId) &&
+                         incoming().keys().hasAll([
+                           'userId', 'sourceType', 'youtubeEnabled', 'instagramEnabled',
+                           'youtubeTitle', 'youtubeDescription', 'youtubePrivacy',
+                           'instagramCaption', 'status', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'sourceType', 'sourceId', 'youtubeEnabled', 'instagramEnabled',
+                           'youtubeTitle', 'youtubeDescription', 'youtubePrivacy',
+                           'instagramCaption', 'videoUri', 'scheduledIso', 'status',
+                           'resultMessage', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidPublishJob(incoming(), userId);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(jobId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().sourceType == existing().sourceType &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidPublishJob(incoming(), userId) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'youtubeEnabled', 'instagramEnabled', 'youtubeTitle',
+                           'youtubeDescription', 'youtubePrivacy', 'instagramCaption',
+                           'videoUri', 'scheduledIso', 'status', 'resultMessage', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(jobId);
       }
     }
   }

@@ -2,198 +2,41 @@ package com.example.data.ai
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.media.MediaMetadataRetriever
 import android.net.Uri
-import android.util.Log
 import com.example.data.model.ClipAnalysisResult
 import com.example.data.model.DetectedClipMoment
 import com.example.data.model.GeneratedUgcScript
+import com.example.data.model.LiveShortsSkillPreset
 import com.example.data.model.ProductResearchResult
+import com.example.data.model.PublishMetadataDraft
 import com.example.data.model.TitleRecommendation
 import com.example.data.model.TranslatedClipResult
+import com.example.data.model.TrimChatMessage
+import com.example.data.model.TrimChatReviewResult
 import com.example.data.model.UgcSegment
 import com.google.firebase.Firebase
 import com.google.firebase.ai.Chat
 import com.google.firebase.ai.GenerativeModel
 import com.google.firebase.ai.ai
-import com.google.firebase.ai.type.AspectRatio
-import com.google.firebase.ai.type.ImageConfig
 import com.google.firebase.ai.type.ImagePart
-import com.google.firebase.ai.type.ImageSize
-import com.google.firebase.ai.type.ResponseModality
-import com.google.firebase.ai.type.Schema
 import com.google.firebase.ai.type.content
-import com.google.firebase.ai.type.generationConfig
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
-import java.io.File
-import java.io.FileOutputStream
-
-private const val TAG = "OpenShortsAiRepo"
 
 class OpenShortsAiRepository(context: Context) {
     private val appContext = context.applicationContext
 
-    // Lazy models following Firebase AI Logic rules
-    private val clipAnalysisModel: GenerativeModel by lazy {
-        val clipMomentSchema = Schema.obj(
-            properties = mapOf(
-                "startSec" to Schema.double("Clip start time in seconds"),
-                "endSec" to Schema.double("Clip end time in seconds, greater than startSec"),
-                "youtubeTitle" to Schema.string("Punchy YouTube Shorts title under 90 chars"),
-                "tiktokCaption" to Schema.string("Engaging TikTok caption with relevant hashtags"),
-                "instagramCaption" to Schema.string("Instagram Reels caption with call-to-action"),
-                "viralHookText" to Schema.string("Short 4-8 word hook overlay displayed at top of clip"),
-                "subtitleText" to Schema.string("Full spoken subtitle lines or punchy script for this clip"),
-                "effectsSummary" to Schema.string("AI auto-edit camera zoom, cut, and pacing notes"),
-                "viralScore" to Schema.integer("Predicted viral score between 60 and 99")
-            )
-        )
-        val rootSchema = Schema.obj(
-            properties = mapOf(
-                "summary" to Schema.string("Concise 2-sentence overview of the video"),
-                "clips" to Schema.array(
-                    items = clipMomentSchema,
-                    description = "List of 3 to 6 high-retention vertical short clip moments"
-                )
-            )
-        )
-        Firebase.ai.generativeModel(
-            modelName = "gemini-3.8-flash",
-            generationConfig = generationConfig {
-                responseMimeType = "application/json"
-                responseSchema = rootSchema
-            }
-        )
-    }
-
-    private val translationModel: GenerativeModel by lazy {
-        val schema = Schema.obj(
-            properties = mapOf(
-                "translatedLanguage" to Schema.string("Target language display name"),
-                "translatedSubtitles" to Schema.string("Translated spoken subtitles keeping timing flow"),
-                "translatedHook" to Schema.string("Translated short punchy viral hook"),
-                "translatedYoutubeTitle" to Schema.string("Translated YouTube Shorts title under 90 chars"),
-                "translatedTiktokCaption" to Schema.string("Translated TikTok caption with localized hashtags")
-            )
-        )
-        Firebase.ai.generativeModel(
-            modelName = "gemini-3.8-flash",
-            generationConfig = generationConfig {
-                responseMimeType = "application/json"
-                responseSchema = schema
-            }
-        )
-    }
-
-    private val productResearchModel: GenerativeModel by lazy {
-        val schema = Schema.obj(
-            properties = mapOf(
-                "productName" to Schema.string("Brand or product name"),
-                "industry" to Schema.string("Industry or niche"),
-                "oneLiner" to Schema.string("Clear 1-sentence value proposition"),
-                "painPoints" to Schema.array(Schema.string(), "3-5 audience pain points"),
-                "keyBenefits" to Schema.array(Schema.string(), "3-5 standout benefits"),
-                "targetAudience" to Schema.string("Primary target audience description"),
-                "emotionalHooks" to Schema.array(Schema.string(), "3-5 scroll-stopping emotional angles")
-            )
-        )
-        Firebase.ai.generativeModel(
-            modelName = "gemini-3.8-flash",
-            generationConfig = generationConfig {
-                responseMimeType = "application/json"
-                responseSchema = schema
-            }
-        )
-    }
-
-    private val ugcScriptModel: GenerativeModel by lazy {
-        val segmentSchema = Schema.obj(
-            properties = mapOf(
-                "label" to Schema.string("Segment phase: Hook, Problem, Solution, or CTA"),
-                "startSec" to Schema.integer("Segment start second"),
-                "endSec" to Schema.integer("Segment end second"),
-                "dialogue" to Schema.string("Spoken UGC line"),
-                "visualDirection" to Schema.string("Camera framing and action cue")
-            )
-        )
-        val scriptSchema = Schema.obj(
-            properties = mapOf(
-                "title" to Schema.string("Campaign concept title"),
-                "hookText" to Schema.string("Opening 3-second hook text overlay"),
-                "fullNarration" to Schema.string("Complete voiceover script from start to finish"),
-                "actorDescription" to Schema.string("Detailed portrait prompt for the AI actor"),
-                "voiceName" to Schema.string("Recommended voice profile"),
-                "caption" to Schema.string("Social post caption"),
-                "hashtags" to Schema.array(Schema.string(), "Up to 8 hashtags"),
-                "durationSeconds" to Schema.integer("Estimated duration in seconds (15 to 45)"),
-                "segments" to Schema.array(segmentSchema, "4 timed storyboard segments")
-            )
-        )
-        val rootSchema = Schema.obj(
-            properties = mapOf(
-                "scripts" to Schema.array(scriptSchema, "List of requested UGC scripts")
-            )
-        )
-        Firebase.ai.generativeModel(
-            modelName = "gemini-3.8-flash",
-            generationConfig = generationConfig {
-                responseMimeType = "application/json"
-                responseSchema = rootSchema
-            }
-        )
-    }
-
-    private val youtubeTitlesModel: GenerativeModel by lazy {
-        val schema = Schema.obj(
-            properties = mapOf(
-                "titles" to Schema.array(Schema.string(), "10 clickable YouTube titles under 70 characters"),
-                "topPick1" to Schema.string("Best overall title from the list"),
-                "topPick2" to Schema.string("Strong runner-up title from the list"),
-                "reasoning" to Schema.string("Brief explanation of why the top 2 picks maximize CTR")
-            )
-        )
-        Firebase.ai.generativeModel(
-            modelName = "gemini-3.8-flash",
-            generationConfig = generationConfig {
-                responseMimeType = "application/json"
-                responseSchema = schema
-            }
-        )
-    }
-
+    private val clipAnalysisModel: GenerativeModel by lazy { OpenShortsAiSchemas.buildClipAnalysisModel() }
+    private val translationModel: GenerativeModel by lazy { OpenShortsAiSchemas.buildTranslationModel() }
+    private val productResearchModel: GenerativeModel by lazy { OpenShortsAiSchemas.buildProductResearchModel() }
+    private val ugcScriptModel: GenerativeModel by lazy { OpenShortsAiSchemas.buildUgcScriptModel() }
+    private val youtubeTitlesModel: GenerativeModel by lazy { OpenShortsAiSchemas.buildYoutubeTitlesModel() }
+    private val publishMetadataModel: GenerativeModel by lazy { OpenShortsAiSchemas.buildPublishMetadataModel() }
+    private val trimReviewModel: GenerativeModel by lazy { OpenShortsAiSchemas.buildTrimReviewModel() }
+    private val thumbnailImageModel: GenerativeModel by lazy { OpenShortsAiSchemas.buildThumbnailImageModel() }
+    private val squareImageModel: GenerativeModel by lazy { OpenShortsAiSchemas.buildPortraitImageModel() }
     private val generalFlashModel: GenerativeModel by lazy {
         Firebase.ai.generativeModel(modelName = "gemini-3.8-flash")
-    }
-
-    private val thumbnailImageModel: GenerativeModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = "gemini-nano-banana-2.1",
-            generationConfig = generationConfig {
-                responseModalities = listOf(ResponseModality.IMAGE)
-                imageConfig = ImageConfig.builder()
-                    .setAspectRatio(AspectRatio.LANDSCAPE_16x9)
-                    .setImageSize(ImageSize.SIZE_1K)
-                    .build()
-            }
-        )
-    }
-
-    private val squareImageModel: GenerativeModel by lazy {
-        Firebase.ai.generativeModel(
-            modelName = "gemini-nano-banana-2.1",
-            generationConfig = generationConfig {
-                responseModalities = listOf(ResponseModality.IMAGE)
-                imageConfig = ImageConfig.builder()
-                    .setAspectRatio(AspectRatio.PORTRAIT_3x4)
-                    .setImageSize(ImageSize.SIZE_1K)
-                    .build()
-            }
-        )
     }
 
     suspend fun analyzeVideoForClips(
@@ -203,7 +46,7 @@ class OpenShortsAiRepository(context: Context) {
         maxClips: Int
     ): Pair<Double, ClipAnalysisResult> = withTimeout(60_000L) {
         val extracted = if (videoUri != null) {
-            extractSampledFrames(videoUri)
+            OpenShortsMediaUtils.extractSampledFrames(appContext, videoUri)
         } else {
             SampledVideoData(durationSec = 180.0, frames = emptyList())
         }
@@ -252,6 +95,114 @@ class OpenShortsAiRepository(context: Context) {
         durationSec to ClipAnalysisResult(summary = summary, clips = clips)
     }
 
+    suspend fun analyzeLiveVideoForShorts(
+        liveStreamLabel: String,
+        lookbackMinutes: Int,
+        skillPreset: LiveShortsSkillPreset,
+        liveCueNotes: String,
+        maxClips: Int
+    ): Pair<Double, ClipAnalysisResult> = withTimeout(60_000L) {
+        val windowDurationSec = (lookbackMinutes.coerceIn(5, 120) * 60).toDouble()
+        val prompt = buildString {
+            appendLine("You are an expert live-stream vertical shorts producer using the '${skillPreset.label}' skill.")
+            appendLine("Live Stream Source: $liveStreamLabel")
+            appendLine("DVR Rolling Buffer Window: Last $lookbackMinutes minutes (0 to ${windowDurationSec.toInt()} seconds).")
+            appendLine("Skill Directive: ${skillPreset.promptInstruction}")
+            if (liveCueNotes.isNotBlank()) {
+                appendLine("Creator live timestamps / chat spikes / topic cues: $liveCueNotes")
+            }
+            appendLine("Extract $maxClips high-energy 15s-55s vertical Shorts moments inside 0..${windowDurationSec.toInt()} seconds.")
+            appendLine("Ensure each clip starts right on an attention-grabbing live moment, cleans dead-air lead-in, and includes punchy vertical subtitles, a viralHookText, YouTube #Shorts title, TikTok/Instagram captions, and viralScore.")
+        }
+
+        val response = clipAnalysisModel.generateContent(prompt)
+        val rawJson = response.text ?: throw IllegalStateException("AI returned empty live-stream analysis.")
+        val json = JSONObject(rawJson)
+        val summary = json.optString("summary", "Live broadcast analyzed for instant vertical shorts.")
+        val clipsArr = json.optJSONArray("clips") ?: throw IllegalStateException("No live clip moments returned.")
+        val clips = buildList {
+            for (i in 0 until clipsArr.length()) {
+                val obj = clipsArr.getJSONObject(i)
+                val start = obj.optDouble("startSec", i * 45.0).coerceIn(0.0, (windowDurationSec - 10.0).coerceAtLeast(0.0))
+                val end = obj.optDouble("endSec", start + 25.0).coerceAtLeast(start + 8.0).coerceAtMost(windowDurationSec)
+                add(
+                    DetectedClipMoment(
+                        startSec = start,
+                        endSec = end,
+                        youtubeTitle = obj.optString("youtubeTitle", "Live Highlight #${i + 1} #Shorts"),
+                        tiktokCaption = obj.optString("tiktokCaption", ""),
+                        instagramCaption = obj.optString("instagramCaption", ""),
+                        viralHookText = obj.optString("viralHookText", "LIVE MOMENT"),
+                        subtitleText = obj.optString("subtitleText", ""),
+                        effectsSummary = obj.optString("effectsSummary", "Live DVR trim + auto-zoom reaction cut"),
+                        viralScore = obj.optInt("viralScore", 88).coerceIn(50, 99)
+                    )
+                )
+            }
+        }
+        windowDurationSec to ClipAnalysisResult(summary = summary, clips = clips)
+    }
+
+    suspend fun reviewAndSuggestTrim(
+        videoTitle: String,
+        sourceLabel: String,
+        totalDurationSec: Double,
+        currentStartSec: Double,
+        currentEndSec: Double,
+        transcriptOrContext: String,
+        chatHistory: List<TrimChatMessage>,
+        userRequest: String
+    ): TrimChatReviewResult = withTimeout(45_000L) {
+        val safeTotal = totalDurationSec.coerceAtLeast(5.0)
+        val historySummary = chatHistory.takeLast(8).joinToString("\n") { msg ->
+            val role = if (msg.fromUser) "Creator" else "Editor AI"
+            val rangeNote = if (msg.suggestedStartSec != null && msg.suggestedEndSec != null) {
+                " [Trim: ${"%.1f".format(msg.suggestedStartSec)}s-${"%.1f".format(msg.suggestedEndSec)}s]"
+            } else ""
+            "$role: ${msg.text}$rangeNote"
+        }
+
+        val prompt = """
+            You are an expert short-form video retention editor helping a creator visually trim a clip via chat review.
+            Video / Clip Title: ${videoTitle.ifBlank { "Untitled Video" }}
+            Source: ${sourceLabel.ifBlank { "Selected Clip" }}
+            Total Video Duration: ${"%.1f".format(safeTotal)} seconds
+            Current Visual Trim Handles: Start = ${"%.1f".format(currentStartSec)}s, End = ${"%.1f".format(currentEndSec)}s (Clip length: ${"%.1f".format((currentEndSec - currentStartSec).coerceAtLeast(1.0))}s)
+            Transcript / Context: ${transcriptOrContext.ifBlank { "No verbatim transcript provided; optimize pacing, hook speed, and clean cut points." }.take(1500)}
+
+            Recent Chat History:
+            ${historySummary.ifBlank { "(New review session)" }}
+
+            Latest Creator Chat Review Request:
+            "$userRequest"
+
+            Instructions:
+            - Evaluate the creator's feedback and adjust suggestedStartSec and suggestedEndSec strictly within [0.0, ${"%.1f".format(safeTotal)}] with suggestedEndSec >= suggestedStartSec + 2.0.
+            - If the user mentions timestamps (e.g. "start at 0:12", "cut last 5s", "make it 20s long", "tighten the intro"), honor those exact timings mathematically relative to current handles or total duration.
+            - Set shouldApplyTrim = true whenever you propose specific start/end trim timestamps to update the visual trim handles.
+            - Keep assistantMessage friendly, specific, and practical (mentioning exact MM:SS bounds).
+        """.trimIndent()
+
+        val response = trimReviewModel.generateContent(prompt)
+        val json = JSONObject(response.text ?: throw IllegalStateException("AI trim review returned empty response."))
+        val minGap = 2.0.coerceAtMost(safeTotal * 0.5)
+        val rawStart = json.optDouble("suggestedStartSec", currentStartSec)
+            .coerceIn(0.0, (safeTotal - minGap).coerceAtLeast(0.0))
+        val rawEnd = json.optDouble("suggestedEndSec", currentEndSec)
+            .coerceAtLeast(rawStart + minGap)
+            .coerceAtMost(safeTotal)
+        TrimChatReviewResult(
+            assistantMessage = json.optString(
+                "assistantMessage",
+                "Updated the trim handles to focus on the strongest opening hook and clean ending."
+            ),
+            suggestedStartSec = rawStart,
+            suggestedEndSec = rawEnd,
+            shouldApplyTrim = json.optBoolean("shouldApplyTrim", true),
+            suggestedTitle = json.optString("suggestedTitle", "")
+        )
+    }
+
     suspend fun translateClipContent(
         targetLanguage: String,
         subtitleText: String,
@@ -296,10 +247,10 @@ class OpenShortsAiRepository(context: Context) {
             productName = json.optString("productName", "Featured Product"),
             industry = json.optString("industry", "Digital / Consumer"),
             oneLiner = json.optString("oneLiner", productDescription.take(120)),
-            painPoints = jsonArrayToList(json.optJSONArray("painPoints")),
-            keyBenefits = jsonArrayToList(json.optJSONArray("keyBenefits")),
+            painPoints = OpenShortsMediaUtils.jsonArrayToList(json.optJSONArray("painPoints")),
+            keyBenefits = OpenShortsMediaUtils.jsonArrayToList(json.optJSONArray("keyBenefits")),
             targetAudience = json.optString("targetAudience", "Modern consumers"),
-            emotionalHooks = jsonArrayToList(json.optJSONArray("emotionalHooks"))
+            emotionalHooks = OpenShortsMediaUtils.jsonArrayToList(json.optJSONArray("emotionalHooks"))
         )
     }
 
@@ -352,7 +303,7 @@ class OpenShortsAiRepository(context: Context) {
                         actorDescription = obj.optString("actorDescription", "Authentic $actorGender creator filming on iPhone"),
                         voiceName = obj.optString("voiceName", if (actorGender == "female") "Aria (Warm UGC)" else "Liam (Natural)"),
                         caption = obj.optString("caption", ""),
-                        hashtags = jsonArrayToList(obj.optJSONArray("hashtags")).take(10),
+                        hashtags = OpenShortsMediaUtils.jsonArrayToList(obj.optJSONArray("hashtags")).take(10),
                         durationSeconds = obj.optInt("durationSeconds", 22).coerceIn(10, 90),
                         segments = segments
                     )
@@ -371,7 +322,11 @@ class OpenShortsAiRepository(context: Context) {
             ?.content?.parts?.filterIsInstance<ImagePart>()
             ?.firstOrNull()?.image
             ?: throw IllegalStateException("AI image model did not return a portrait.")
-        val savedPath = saveBitmapToAppStorage(bitmap, "actor_${System.currentTimeMillis()}.jpg")
+        val savedPath = OpenShortsMediaUtils.saveBitmapToAppStorage(
+            appContext,
+            bitmap,
+            "actor_${System.currentTimeMillis()}.jpg"
+        )
         bitmap to savedPath
     }
 
@@ -379,7 +334,11 @@ class OpenShortsAiRepository(context: Context) {
         videoUri: Uri?,
         topicOrNotes: String
     ): TitleRecommendation = withTimeout(60_000L) {
-        val frames = if (videoUri != null) extractSampledFrames(videoUri).frames else emptyList()
+        val frames = if (videoUri != null) {
+            OpenShortsMediaUtils.extractSampledFrames(appContext, videoUri).frames
+        } else {
+            emptyList()
+        }
         val prompt = """
             You are a YouTube CTR strategist. Generate 10 curiosity-driven, high-CTR YouTube titles (each strictly under 70 characters) for this video topic:
             ${topicOrNotes.ifBlank { "Analyze the provided video frames and craft viral YouTube titles." }}
@@ -392,7 +351,7 @@ class OpenShortsAiRepository(context: Context) {
             }
         )
         val json = JSONObject(response.text ?: throw IllegalStateException("Title generator returned empty response."))
-        val titles = jsonArrayToList(json.optJSONArray("titles")).take(12)
+        val titles = OpenShortsMediaUtils.jsonArrayToList(json.optJSONArray("titles")).take(12)
         TitleRecommendation(
             titles = titles,
             topPick1 = json.optString("topPick1", titles.firstOrNull().orEmpty()),
@@ -457,8 +416,8 @@ class OpenShortsAiRepository(context: Context) {
         }
         val response = thumbnailImageModel.generateContent(
             content {
-                faceBitmap?.let { image(scaleBitmapMaxWidth(it, 768)) }
-                backgroundBitmap?.let { image(scaleBitmapMaxWidth(it, 768)) }
+                faceBitmap?.let { image(OpenShortsMediaUtils.scaleBitmapMaxWidth(it, 768)) }
+                backgroundBitmap?.let { image(OpenShortsMediaUtils.scaleBitmapMaxWidth(it, 768)) }
                 text(prompt)
             }
         )
@@ -466,75 +425,42 @@ class OpenShortsAiRepository(context: Context) {
             ?.content?.parts?.filterIsInstance<ImagePart>()
             ?.firstOrNull()?.image
             ?: throw IllegalStateException("Thumbnail model did not return an image.")
-        val path = saveBitmapToAppStorage(bitmap, "thumb_${System.currentTimeMillis()}.jpg")
+        val path = OpenShortsMediaUtils.saveBitmapToAppStorage(
+            appContext,
+            bitmap,
+            "thumb_${System.currentTimeMillis()}.jpg"
+        )
         bitmap to path
     }
 
-    fun decodeUriToBitmap(uri: Uri): Bitmap? {
-        return try {
-            appContext.contentResolver.openInputStream(uri)?.use { stream ->
-                BitmapFactory.decodeStream(stream)?.let { scaleBitmapMaxWidth(it, 1024) }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to decode bitmap from URI: $uri", e)
-            null
-        }
+    suspend fun generatePublishMetadata(
+        titleHint: String,
+        contextText: String,
+        transcript: String,
+        language: String = "English"
+    ): PublishMetadataDraft = withTimeout(45_000L) {
+        val prompt = """
+            Optimize metadata for automated publishing of a short-form vertical video to BOTH YouTube Shorts and Instagram Reels in $language.
+            Current title idea: ${titleHint.ifBlank { "Untitled Short" }}
+            Hook / summary context: ${contextText.ifBlank { "High-retention creator short" }}
+            Spoken captions / transcript: ${transcript.take(1500)}
+
+            Requirements:
+            1. youtubeTitle: Punchy, curiosity-driven YouTube Shorts title strictly <= 95 chars (include #Shorts if helpful).
+            2. youtubeDescription: Hook paragraph, cleaned spoken captions / key takeaways, and 5-8 discoverable hashtags.
+            3. instagramCaption: Scroll-stopping Reels opening line, concise body with CTA (Save/Share/Comment), and 6-8 targeted hashtags.
+        """.trimIndent()
+        val response = publishMetadataModel.generateContent(prompt)
+        val json = JSONObject(response.text ?: throw IllegalStateException("AI metadata optimization returned empty output."))
+        PublishMetadataDraft(
+            youtubeTitle = json.optString("youtubeTitle", titleHint).take(100),
+            youtubeDescription = json.optString("youtubeDescription", transcript),
+            instagramCaption = json.optString("instagramCaption", contextText)
+        )
     }
 
-    fun saveBitmapToAppStorage(bitmap: Bitmap, filename: String): String {
-        val dir = File(appContext.filesDir, "generated").apply { mkdirs() }
-        val file = File(dir, filename)
-        FileOutputStream(file).use { out ->
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 92, out)
-        }
-        return file.absolutePath
-    }
+    fun decodeUriToBitmap(uri: Uri): Bitmap? = OpenShortsMediaUtils.decodeUriToBitmap(appContext, uri)
 
-    private data class SampledVideoData(
-        val durationSec: Double,
-        val frames: List<Bitmap>
-    )
-
-    private suspend fun extractSampledFrames(uri: Uri): SampledVideoData = withContext(Dispatchers.IO) {
-        val retriever = MediaMetadataRetriever()
-        try {
-            retriever.setDataSource(appContext, uri)
-            val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                ?.toLongOrNull() ?: 60_000L
-            val fractions = listOf(0.10, 0.35, 0.60, 0.85)
-            val frames = fractions.mapNotNull { fraction ->
-                val timeUs = (durationMs * fraction * 1000.0).toLong()
-                retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                    ?.let { scaleBitmapMaxWidth(it, 512) }
-            }
-            SampledVideoData(
-                durationSec = (durationMs / 1000.0).coerceAtLeast(10.0),
-                frames = frames
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not extract frames via MediaMetadataRetriever: ${e.message}")
-            SampledVideoData(durationSec = 90.0, frames = emptyList())
-        } finally {
-            try {
-                retriever.release()
-            } catch (_: Exception) {
-            }
-        }
-    }
-
-    private fun scaleBitmapMaxWidth(src: Bitmap, maxWidth: Int): Bitmap {
-        if (src.width <= maxWidth) return src
-        val ratio = maxWidth.toFloat() / src.width.toFloat()
-        val targetHeight = (src.height * ratio).toInt().coerceAtLeast(1)
-        return Bitmap.createScaledBitmap(src, maxWidth, targetHeight, true)
-    }
-
-    private fun jsonArrayToList(arr: org.json.JSONArray?): List<String> {
-        if (arr == null) return emptyList()
-        return (0 until arr.length()).mapNotNull { idx ->
-            arr.optString(idx)?.takeIf { it.isNotBlank() }
-        }
-    }
+    fun saveBitmapToAppStorage(bitmap: Bitmap, filename: String): String =
+        OpenShortsMediaUtils.saveBitmapToAppStorage(appContext, bitmap, filename)
 }

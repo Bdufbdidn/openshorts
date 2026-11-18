@@ -427,10 +427,13 @@ fun ScheduleWeekSheet(
     clips: List<GeneratedClip>,
     isBusy: Boolean,
     onDismiss: () -> Unit,
-    onScheduleWeek: (platforms: List<String>, startDate: String, hourUtc: Int) -> Unit
+    onScheduleWeek: (youtubeEnabled: Boolean, instagramEnabled: Boolean, startDate: String, hourUtc: Int) -> Unit
 ) {
-    val selectedPlatforms = remember { mutableStateListOf("youtube", "tiktok", "instagram") }
-    var startDate by remember { mutableStateOf("2026-04-01") }
+    var youtubeEnabled by remember { mutableStateOf(true) }
+    var instagramEnabled by remember { mutableStateOf(true) }
+    var startDate by remember {
+        mutableStateOf(java.time.LocalDate.now(java.time.ZoneOffset.UTC).plusDays(1).toString())
+    }
     var hour by remember { mutableFloatStateOf(16f) }
 
     ModalBottomSheet(
@@ -443,25 +446,28 @@ fun ScheduleWeekSheet(
                 .padding(horizontal = 20.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Text("Schedule Week (${clips.size} Clips)", style = MaterialTheme.typography.headlineSmall)
+            Text("Automate Week (${clips.take(7).size} Shorts)", style = MaterialTheme.typography.headlineSmall)
             Text(
-                "Queue daily multi-platform uploads via Upload-Post.",
+                "Queue daily staggered uploads to your YouTube Channel (#Shorts) and Instagram Reels with AI titles & captions.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("youtube", "tiktok", "instagram").forEach { plat ->
-                    val active = plat in selectedPlatforms
-                    FilterChip(
-                        selected = active,
-                        onClick = {
-                            if (active && selectedPlatforms.size > 1) selectedPlatforms.remove(plat)
-                            else if (!active) selectedPlatforms.add(plat)
-                        },
-                        label = { Text(plat.replaceFirstChar { it.uppercase() }) }
-                    )
-                }
+                FilterChip(
+                    selected = youtubeEnabled,
+                    onClick = {
+                        if (!(youtubeEnabled && !instagramEnabled)) youtubeEnabled = !youtubeEnabled
+                    },
+                    label = { Text("YouTube Channel") }
+                )
+                FilterChip(
+                    selected = instagramEnabled,
+                    onClick = {
+                        if (!(instagramEnabled && !youtubeEnabled)) instagramEnabled = !instagramEnabled
+                    },
+                    label = { Text("Instagram Reels") }
+                )
             }
 
             OutlinedTextField(
@@ -476,12 +482,12 @@ fun ScheduleWeekSheet(
             Slider(value = hour, onValueChange = { hour = it }, valueRange = 0f..23f, steps = 22)
 
             Button(
-                onClick = { onScheduleWeek(selectedPlatforms.toList(), startDate, hour.toInt()) },
-                enabled = !isBusy && clips.isNotEmpty(),
-                modifier = Modifier.fillMaxWidth().height(50.dp)
+                onClick = { onScheduleWeek(youtubeEnabled, instagramEnabled, startDate, hour.toInt()) },
+                enabled = !isBusy && clips.isNotEmpty() && (youtubeEnabled || instagramEnabled),
+                modifier = Modifier.fillMaxWidth().height(50.dp).testTag("confirm_schedule_week_button")
             ) {
                 if (isBusy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                else Text("Queue ${clips.take(7).size} Daily Posts")
+                else Text("Automate ${clips.take(7).size} Daily Posts")
             }
             Spacer(Modifier.height(16.dp))
         }

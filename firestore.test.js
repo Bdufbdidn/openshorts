@@ -105,17 +105,34 @@ test("Owner can create, update, and list ClipJobs and child GeneratedClips", asy
       })
   );
 
-  // Partial update on clip
+  // Partial update on clip including trim bounds
   await assertSucceeds(
     aliceDb
       .collection("users").doc(ALICE_UID)
       .collection("clip_jobs").doc("job_1")
       .collection("clips").doc("clip_1")
       .update({
+        startSec: 14.0,
+        endSec: 38.5,
         viralHookText: "Stop making this startup mistake!",
         hookPosition: "center",
         updatedAt: new Date(Date.now() - 1000),
       })
+  );
+
+  // Live stream ClipJob creation
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).collection("clip_jobs").doc("job_live_1").set({
+      userId: ALICE_UID,
+      sourceType: "live",
+      sourceLabel: "https://youtube.com/watch?v=live123",
+      durationSec: 900.0,
+      status: "completed",
+      summary: "Live broadcast highlight shorts",
+      clipsCount: 1,
+      createdAt: ts,
+      updatedAt: ts,
+    })
   );
 
   // Reject ghost field / shadow update
@@ -177,6 +194,68 @@ test("Cross-user access is denied across all user-scoped collections", async () 
     bobDb.collection("users").doc(ALICE_UID).collection("ai_shorts").doc("short_1").update({
       scriptTitle: "Hijacked",
       updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+});
+
+test("Owner can create, update, and list publish_jobs while invalid payloads and other users fail", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  const ts = new Date(Date.now() - 5000);
+
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).collection("publish_jobs").doc("pub_1").set({
+      userId: ALICE_UID,
+      sourceType: "clip",
+      sourceId: "clip_1",
+      youtubeEnabled: true,
+      instagramEnabled: true,
+      youtubeTitle: "3 Secrets Founders Ignore #Shorts",
+      youtubeDescription: "Full breakdown of viral retention hooks.\n\n#Shorts #Founders",
+      youtubePrivacy: "public",
+      instagramCaption: "Save this for your next launch 🚀 #reels #startup",
+      scheduledIso: "2026-11-20T16:00:00Z",
+      status: "scheduled",
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+
+  // Valid status update by owner
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).collection("publish_jobs").doc("pub_1").update({
+      status: "published",
+      resultMessage: "Posted to YouTube & Instagram",
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+
+  // List works for owner
+  await assertSucceeds(aliceDb.collection("users").doc(ALICE_UID).collection("publish_jobs").get());
+
+  // Cross-user read/write blocked
+  await assertFails(bobDb.collection("users").doc(ALICE_UID).collection("publish_jobs").get());
+  await assertFails(
+    bobDb.collection("users").doc(ALICE_UID).collection("publish_jobs").doc("pub_1").update({
+      status: "failed",
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+
+  // Reject both platforms disabled
+  await assertFails(
+    aliceDb.collection("users").doc(ALICE_UID).collection("publish_jobs").doc("pub_2").set({
+      userId: ALICE_UID,
+      sourceType: "clip",
+      youtubeEnabled: false,
+      instagramEnabled: false,
+      youtubeTitle: "Invalid",
+      youtubeDescription: "",
+      youtubePrivacy: "public",
+      instagramCaption: "",
+      status: "queued",
+      createdAt: ts,
+      updatedAt: ts,
     })
   );
 });

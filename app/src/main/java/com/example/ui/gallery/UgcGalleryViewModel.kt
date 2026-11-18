@@ -10,6 +10,9 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.R
 import com.example.data.ai.OpenShortsAiRepository
+import com.example.data.local.EditedVideoExportSource
+import com.example.data.local.EditedVideoMetadata
+import com.example.data.local.EditedVideoMetadataRepository
 import com.example.data.model.AiShortProject
 import com.example.data.model.UgcAvatar
 import com.example.data.model.UiState
@@ -17,22 +20,26 @@ import com.example.data.repository.OpenShortsFirestoreRepository
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 private const val TAG = "UgcGalleryVM"
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class UgcGalleryViewModel(
     private val currentUserId: String,
     private val firestoreRepo: OpenShortsFirestoreRepository,
-    private val aiRepo: OpenShortsAiRepository
+    private val aiRepo: OpenShortsAiRepository,
+    private val editedVideoMetadataRepo: EditedVideoMetadataRepository
 ) : ViewModel() {
 
     val shortsState: StateFlow<UiState<List<AiShortProject>>> = firestoreRepo.observeAiShorts(currentUserId)
@@ -63,6 +70,70 @@ class UgcGalleryViewModel(
 
     private val _createAvatarState = MutableStateFlow<UiState<String>>(UiState.Idle)
     val createAvatarState: StateFlow<UiState<String>> = _createAvatarState.asStateFlow()
+
+    private val _editedVideoSearchQuery = MutableStateFlow("")
+    val editedVideoSearchQuery: StateFlow<String> = _editedVideoSearchQuery.asStateFlow()
+
+    val editedVideosMetadata: StateFlow<List<EditedVideoMetadata>> = _editedVideoSearchQuery
+        .flatMapLatest { query ->
+            editedVideoMetadataRepo.searchEditedVideos(currentUserId, query)
+        }
+        .catch { emit(emptyList()) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+
+    private val _metadataFeedback = MutableStateFlow<String?>(null)
+    val metadataFeedback: StateFlow<String?> = _metadataFeedback.asStateFlow()
+
+    fun updateEditedVideoSearchQuery(query: String) {
+        _editedVideoSearchQuery.value = query
+    }
+
+    fun clearMetadataFeedback() {
+        _metadataFeedback.value = null
+    }
+
+    fun addManualEditedVideoMetadata(
+        title: String,
+        description: String,
+        videoUri: String
+    ) {
+        if (title.isBlank()) {
+            _metadataFeedback.value = "Enter a video title."
+            return
+        }
+        viewModelScope.launch {
+            editedVideoMetadataRepo.recordExportedVideo(
+                userId = currentUserId,
+                title = title,
+                description = description,
+                videoUri = videoUri.trim(),
+                exportSource = EditedVideoExportSource.MANUAL_ENTRY
+            ).fold(
+                onSuccess = { _metadataFeedback.value = "Saved video metadata to Room." },
+                onFailure = { _metadataFeedback.value = it.localizedMessage ?: "Failed to save video metadata." }
+            )
+        }
+    }
+
+    fun updateEditedVideoMetadata(id: String, title: String, description: String) {
+        viewModelScope.launch {
+            editedVideoMetadataRepo.updateTitleAndDescription(
+                userId = currentUserId,
+                id = id,
+                title = title,
+                description = description
+            ).fold(
+                onSuccess = { _metadataFeedback.value = "Updated title and description." },
+                onFailure = { _metadataFeedback.value = it.localizedMessage ?: "Failed to update metadata." }
+            )
+        }
+    }
+
+    fun deleteEditedVideoMetadata(id: String) {
+        viewModelScope.launch {
+            editedVideoMetadataRepo.deleteById(currentUserId, id)
+        }
+    }
 
     fun createAiAvatar(name: String, prompt: String, gender: String) {
         if (name.isBlank() || prompt.isBlank()) {
@@ -122,7 +193,8 @@ class UgcGalleryViewModel(
                 UgcGalleryViewModel(
                     currentUserId = currentUserId,
                     firestoreRepo = OpenShortsFirestoreRepository(db),
-                    aiRepo = OpenShortsAiRepository(app)
+                    aiRepo = OpenShortsAiRepository(app),
+                    editedVideoMetadataRepo = EditedVideoMetadataRepository(app)
                 )
             }
         }
