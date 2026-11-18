@@ -40,3 +40,16 @@ output/
 skills/
 skills-lock.json
 
+# Firebase CLI debug logs
+*-debug.log
+
+# Android / Gradle
+.gradle/
+build/
+app/build/
+captures/
+*.apk
+*.aab
+*.ap_
+
+

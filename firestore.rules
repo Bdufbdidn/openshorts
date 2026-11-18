@@ -1,0 +1,276 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidTimestamp(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+
+    function isOptionalString(data, key, maxLen) {
+      return !((key in data)) || (data[key] is string && data[key].size() <= maxLen);
+    }
+
+    function isOptionalBoundedStringList(data, key, maxItems) {
+      return !((key in data)) || (
+        data[key] is list &&
+        data[key].size() <= maxItems &&
+        (data[key].size() == 0 || data[key][0] is string)
+      );
+    }
+
+    // Entity Validators
+    function isValidClipJob(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             data.sourceType in ['video', 'url'] &&
+             data.sourceLabel is string && data.sourceLabel.size() >= 1 && data.sourceLabel.size() <= 500 &&
+             isOptionalString(data, 'videoUri', 500) &&
+             data.durationSec is number && data.durationSec >= 0 &&
+             data.status in ['processing', 'completed', 'failed'] &&
+             isOptionalString(data, 'summary', 2000) &&
+             data.clipsCount is int && data.clipsCount >= 0 && data.clipsCount <= 100 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidGeneratedClip(data, userId, jobId) {
+      return data.userId is string && data.userId == userId &&
+             data.jobId is string && data.jobId == jobId &&
+             data.clipIndex is int && data.clipIndex >= 0 && data.clipIndex <= 100 &&
+             data.startSec is number && data.startSec >= 0 &&
+             data.endSec is number && data.endSec > data.startSec &&
+             data.youtubeTitle is string && data.youtubeTitle.size() >= 1 && data.youtubeTitle.size() <= 150 &&
+             isOptionalString(data, 'tiktokCaption', 1000) &&
+             isOptionalString(data, 'instagramCaption', 1000) &&
+             isOptionalString(data, 'viralHookText', 160) &&
+             (!('hookPosition' in data) || data.hookPosition in ['top', 'center', 'bottom']) &&
+             (!('hookSize' in data) || data.hookSize in ['S', 'M', 'L']) &&
+             (!('hookAnimation' in data) || data.hookAnimation in ['spring', 'fade', 'slide-up', 'none']) &&
+             (!('hookDurationSec' in data) || (data.hookDurationSec is int && data.hookDurationSec >= 1 && data.hookDurationSec <= 60)) &&
+             (!('subtitlePosition' in data) || data.subtitlePosition in ['top', 'middle', 'bottom']) &&
+             (!('subtitleAnimation' in data) || data.subtitleAnimation in ['pop', 'word-highlight', 'karaoke', 'none']) &&
+             isOptionalString(data, 'subtitleFont', 40) &&
+             isOptionalString(data, 'subtitleColorHex', 12) &&
+             isOptionalString(data, 'subtitleHighlightHex', 12) &&
+             isOptionalString(data, 'subtitleText', 3000) &&
+             isOptionalString(data, 'effectsSummary', 1000) &&
+             isOptionalString(data, 'translatedLanguage', 30) &&
+             data.viralScore is int && data.viralScore >= 0 && data.viralScore <= 100 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidAiShortProject(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             data.productName is string && data.productName.size() >= 1 && data.productName.size() <= 150 &&
+             isOptionalString(data, 'productUrl', 500) &&
+             isOptionalString(data, 'productDescription', 2000) &&
+             isOptionalString(data, 'industry', 100) &&
+             isOptionalString(data, 'oneLiner', 500) &&
+             data.videoMode in ['lowcost', 'premium'] &&
+             data.style in ['ugc', 'educational', 'shock', 'story', 'comparison'] &&
+             data.language in ['en', 'es'] &&
+             data.actorGender in ['female', 'male'] &&
+             data.scriptTitle is string && data.scriptTitle.size() >= 1 && data.scriptTitle.size() <= 200 &&
+             isOptionalString(data, 'hookText', 200) &&
+             data.fullNarration is string && data.fullNarration.size() >= 1 && data.fullNarration.size() <= 4000 &&
+             isOptionalString(data, 'actorDescription', 1000) &&
+             isOptionalString(data, 'voiceName', 100) &&
+             isOptionalString(data, 'actorImagePath', 500) &&
+             isOptionalString(data, 'brollImagePath', 500) &&
+             isOptionalString(data, 'caption', 1000) &&
+             isOptionalBoundedStringList(data, 'hashtags', 15) &&
+             data.durationSeconds is int && data.durationSeconds >= 1 && data.durationSeconds <= 180 &&
+             data.estimatedCostUsd is number && data.estimatedCostUsd >= 0 &&
+             data.status in ['draft', 'completed'] &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidYoutubeProject(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             data.mode in ['video', 'manual'] &&
+             data.selectedTitle is string && data.selectedTitle.size() >= 1 && data.selectedTitle.size() <= 120 &&
+             isOptionalBoundedStringList(data, 'suggestedTitles', 15) &&
+             isOptionalString(data, 'description', 5000) &&
+             isOptionalString(data, 'thumbnailPrompt', 1000) &&
+             isOptionalString(data, 'thumbnailPath', 500) &&
+             data.publishedStatus in ['draft', 'published'] &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidUgcAvatar(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+             data.prompt is string && data.prompt.size() >= 1 && data.prompt.size() <= 1000 &&
+             data.gender in ['female', 'male'] &&
+             isOptionalString(data, 'localImagePath', 500) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    // Collection Rules
+    match /users/{userId} {
+      allow read, write: if false;
+
+      match /clip_jobs/{jobId} {
+        allow list: if isOwner(userId);
+        allow get: if isOwner(userId) && isValidId(jobId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(jobId) &&
+                         incoming().keys().hasAll(['userId', 'sourceType', 'sourceLabel', 'durationSec', 'status', 'clipsCount', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'sourceType', 'sourceLabel', 'videoUri', 'durationSec', 'status', 'summary', 'clipsCount', 'createdAt', 'updatedAt']) &&
+                         isValidClipJob(incoming(), userId);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(jobId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidClipJob(incoming(), userId) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['status', 'summary', 'clipsCount', 'durationSec', 'updatedAt']);
+
+        allow delete: if isOwner(userId) && isValidId(jobId);
+
+        match /clips/{clipId} {
+          allow list: if isOwner(userId);
+          allow get: if isOwner(userId) && isValidId(jobId) && isValidId(clipId);
+
+          allow create: if isOwner(userId) &&
+                           isValidId(jobId) &&
+                           isValidId(clipId) &&
+                           exists(/databases/$(database)/documents/users/$(userId)/clip_jobs/$(jobId)) &&
+                           incoming().keys().hasAll(['userId', 'jobId', 'clipIndex', 'startSec', 'endSec', 'youtubeTitle', 'viralScore', 'createdAt', 'updatedAt']) &&
+                           incoming().keys().hasOnly([
+                             'userId', 'jobId', 'clipIndex', 'startSec', 'endSec', 'youtubeTitle',
+                             'tiktokCaption', 'instagramCaption', 'viralHookText', 'hookPosition',
+                             'hookSize', 'hookAnimation', 'hookDurationSec', 'subtitlePosition',
+                             'subtitleAnimation', 'subtitleFont', 'subtitleColorHex', 'subtitleHighlightHex',
+                             'subtitleText', 'effectsSummary', 'translatedLanguage', 'viralScore',
+                             'createdAt', 'updatedAt'
+                           ]) &&
+                           isValidGeneratedClip(incoming(), userId, jobId);
+
+          allow update: if isOwner(userId) &&
+                           isValidId(jobId) &&
+                           isValidId(clipId) &&
+                           incoming().userId == existing().userId &&
+                           incoming().jobId == existing().jobId &&
+                           incoming().createdAt == existing().createdAt &&
+                           isValidGeneratedClip(incoming(), userId, jobId) &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'youtubeTitle', 'tiktokCaption', 'instagramCaption', 'viralHookText',
+                             'hookPosition', 'hookSize', 'hookAnimation', 'hookDurationSec',
+                             'subtitlePosition', 'subtitleAnimation', 'subtitleFont',
+                             'subtitleColorHex', 'subtitleHighlightHex', 'subtitleText',
+                             'effectsSummary', 'translatedLanguage', 'updatedAt'
+                           ]);
+
+          allow delete: if isOwner(userId) && isValidId(jobId) && isValidId(clipId);
+        }
+      }
+
+      match /ai_shorts/{shortId} {
+        allow list: if isOwner(userId);
+        allow get: if isOwner(userId) && isValidId(shortId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(shortId) &&
+                         incoming().keys().hasAll(['userId', 'productName', 'videoMode', 'style', 'language', 'actorGender', 'scriptTitle', 'fullNarration', 'durationSeconds', 'estimatedCostUsd', 'status', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'productName', 'productUrl', 'productDescription', 'industry',
+                           'oneLiner', 'videoMode', 'style', 'language', 'actorGender', 'scriptTitle',
+                           'hookText', 'fullNarration', 'actorDescription', 'voiceName',
+                           'actorImagePath', 'brollImagePath', 'caption', 'hashtags',
+                           'durationSeconds', 'estimatedCostUsd', 'status', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidAiShortProject(incoming(), userId);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(shortId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidAiShortProject(incoming(), userId) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'scriptTitle', 'hookText', 'fullNarration', 'actorDescription',
+                           'voiceName', 'actorImagePath', 'brollImagePath', 'caption',
+                           'status', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(shortId);
+      }
+
+      match /youtube_projects/{projectId} {
+        allow list: if isOwner(userId);
+        allow get: if isOwner(userId) && isValidId(projectId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(projectId) &&
+                         incoming().keys().hasAll(['userId', 'mode', 'selectedTitle', 'publishedStatus', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'mode', 'selectedTitle', 'suggestedTitles', 'description',
+                           'thumbnailPrompt', 'thumbnailPath', 'publishedStatus', 'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidYoutubeProject(incoming(), userId);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(projectId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidYoutubeProject(incoming(), userId) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'selectedTitle', 'suggestedTitles', 'description',
+                           'thumbnailPrompt', 'thumbnailPath', 'publishedStatus', 'updatedAt'
+                         ]);
+
+        allow delete: if isOwner(userId) && isValidId(projectId);
+      }
+
+      match /avatars/{avatarId} {
+        allow list: if isOwner(userId);
+        allow get: if isOwner(userId) && isValidId(avatarId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(avatarId) &&
+                         incoming().keys().hasAll(['userId', 'name', 'prompt', 'gender', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'name', 'prompt', 'gender', 'localImagePath', 'createdAt', 'updatedAt']) &&
+                         isValidUgcAvatar(incoming(), userId);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(avatarId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidUgcAvatar(incoming(), userId) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['name', 'prompt', 'localImagePath', 'updatedAt']);
+
+        allow delete: if isOwner(userId) && isValidId(avatarId);
+      }
+    }
+  }
+}

@@ -1,0 +1,141 @@
+{
+  "entities": {
+    "ClipJob": {
+      "title": "ClipJob",
+      "description": "A Clip Generator processing session for turning long-form videos or URLs into viral shorts.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Authenticated owner UID" },
+        "sourceType": { "type": "string", "enum": ["video", "url"] },
+        "sourceLabel": { "type": "string", "description": "Video filename or URL" },
+        "videoUri": { "type": "string", "description": "Local content URI if picked from device" },
+        "durationSec": { "type": "number", "description": "Video duration in seconds" },
+        "status": { "type": "string", "enum": ["processing", "completed", "failed"] },
+        "summary": { "type": "string", "description": "AI summary of analyzed video" },
+        "clipsCount": { "type": "integer", "description": "Number of generated clips" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp on update" }
+      },
+      "required": ["userId", "sourceType", "sourceLabel", "durationSec", "status", "clipsCount", "createdAt", "updatedAt"]
+    },
+    "GeneratedClip": {
+      "title": "GeneratedClip",
+      "description": "An individual viral short clip extracted from a ClipJob with subtitle, hook, and translation metadata.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Authenticated owner UID" },
+        "jobId": { "type": "string", "description": "Parent ClipJob document ID" },
+        "clipIndex": { "type": "integer", "description": "Zero-based index in job" },
+        "startSec": { "type": "number", "description": "Clip start timestamp in seconds" },
+        "endSec": { "type": "number", "description": "Clip end timestamp in seconds" },
+        "youtubeTitle": { "type": "string", "description": "YouTube Shorts title" },
+        "tiktokCaption": { "type": "string", "description": "TikTok caption" },
+        "instagramCaption": { "type": "string", "description": "Instagram Reels caption" },
+        "viralHookText": { "type": "string", "description": "Hook overlay text" },
+        "hookPosition": { "type": "string", "enum": ["top", "center", "bottom"] },
+        "hookSize": { "type": "string", "enum": ["S", "M", "L"] },
+        "hookAnimation": { "type": "string", "enum": ["spring", "fade", "slide-up", "none"] },
+        "hookDurationSec": { "type": "integer", "description": "Hook display duration in seconds" },
+        "subtitlePosition": { "type": "string", "enum": ["top", "middle", "bottom"] },
+        "subtitleAnimation": { "type": "string", "enum": ["pop", "word-highlight", "karaoke", "none"] },
+        "subtitleFont": { "type": "string", "description": "Subtitle font family name" },
+        "subtitleColorHex": { "type": "string", "description": "Subtitle primary hex color" },
+        "subtitleHighlightHex": { "type": "string", "description": "Subtitle highlight hex color" },
+        "subtitleText": { "type": "string", "description": "Transcript or edited subtitle text" },
+        "effectsSummary": { "type": "string", "description": "AI auto-edit effects plan summary" },
+        "translatedLanguage": { "type": "string", "description": "Target dubbing/translation language" },
+        "viralScore": { "type": "integer", "description": "Predicted viral score 0-100" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "jobId", "clipIndex", "startSec", "endSec", "youtubeTitle", "viralScore", "createdAt", "updatedAt"]
+    },
+    "AiShortProject": {
+      "title": "AiShortProject",
+      "description": "An AI Shorts UGC video marketing campaign with research, script, actor portrait, and storyboard.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "productName": { "type": "string" },
+        "productUrl": { "type": "string" },
+        "productDescription": { "type": "string" },
+        "industry": { "type": "string" },
+        "oneLiner": { "type": "string" },
+        "videoMode": { "type": "string", "enum": ["lowcost", "premium"] },
+        "style": { "type": "string", "enum": ["ugc", "educational", "shock", "story", "comparison"] },
+        "language": { "type": "string", "enum": ["en", "es"] },
+        "actorGender": { "type": "string", "enum": ["female", "male"] },
+        "scriptTitle": { "type": "string" },
+        "hookText": { "type": "string" },
+        "fullNarration": { "type": "string" },
+        "actorDescription": { "type": "string" },
+        "voiceName": { "type": "string" },
+        "actorImagePath": { "type": "string" },
+        "brollImagePath": { "type": "string" },
+        "caption": { "type": "string" },
+        "hashtags": { "type": "array" },
+        "durationSeconds": { "type": "integer" },
+        "estimatedCostUsd": { "type": "number" },
+        "status": { "type": "string", "enum": ["draft", "completed"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "productName", "videoMode", "style", "language", "actorGender", "scriptTitle", "fullNarration", "durationSeconds", "estimatedCostUsd", "status", "createdAt", "updatedAt"]
+    },
+    "YoutubeStudioProject": {
+      "title": "YoutubeStudioProject",
+      "description": "A YouTube Studio project containing viral title picks, AI thumbnail, and chaptered description.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "mode": { "type": "string", "enum": ["video", "manual"] },
+        "selectedTitle": { "type": "string" },
+        "suggestedTitles": { "type": "array" },
+        "description": { "type": "string" },
+        "thumbnailPrompt": { "type": "string" },
+        "thumbnailPath": { "type": "string" },
+        "publishedStatus": { "type": "string", "enum": ["draft", "published"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "mode", "selectedTitle", "publishedStatus", "createdAt", "updatedAt"]
+    },
+    "UgcAvatar": {
+      "title": "UgcAvatar",
+      "description": "An AI-generated or uploaded actor avatar saved in the user's UGC Gallery.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "prompt": { "type": "string" },
+        "gender": { "type": "string", "enum": ["female", "male"] },
+        "localImagePath": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "name", "prompt", "gender", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/clip_jobs/{jobId}": {
+      "schema": { "$ref": "#/entities/ClipJob" },
+      "description": "User-owned Clip Generator jobs"
+    },
+    "/users/{userId}/clip_jobs/{jobId}/clips/{clipId}": {
+      "schema": { "$ref": "#/entities/GeneratedClip" },
+      "description": "Generated viral clips belonging to a ClipJob"
+    },
+    "/users/{userId}/ai_shorts/{shortId}": {
+      "schema": { "$ref": "#/entities/AiShortProject" },
+      "description": "User-owned AI Shorts UGC campaigns and videos"
+    },
+    "/users/{userId}/youtube_projects/{projectId}": {
+      "schema": { "$ref": "#/entities/YoutubeStudioProject" },
+      "description": "User-owned YouTube Studio title, thumbnail, and description projects"
+    },
+    "/users/{userId}/avatars/{avatarId}": {
+      "schema": { "$ref": "#/entities/UgcAvatar" },
+      "description": "User-owned AI actor portraits in UGC Gallery"
+    }
+  }
+}

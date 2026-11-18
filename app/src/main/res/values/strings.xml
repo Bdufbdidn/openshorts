@@ -1,0 +1,28 @@
+<resources>
+    <string name="app_name">OpenShorts</string>
+    <string name="tagline">AI Clip Studio &amp; UGC Video Creator</string>
+    <string name="auth_hero_title">Turn Long Videos Into Viral Shorts</string>
+    <string name="auth_hero_subtitle">Detect viral moments, generate 9:16 hooks &amp; animated captions, create AI UGC campaigns, and design high-CTR YouTube thumbnails.</string>
+    <string name="sign_in_google">Sign in with Google</string>
+    <string name="sign_out">Sign Out</string>
+
+    <string name="nav_clips">Clips</string>
+    <string name="nav_ai_shorts">AI Shorts</string>
+    <string name="nav_gallery">Gallery</string>
+    <string name="nav_youtube">YT Studio</string>
+    <string name="nav_settings">Settings</string>
+
+    <string name="cd_app_logo">OpenShorts Studio Logo</string>
+    <string name="cd_studio_hero">OpenShorts AI Studio Banner</string>
+    <string name="cd_play_pause">Play or pause video preview</string>
+    <string name="cd_play_video">Play video</string>
+    <string name="cd_pause_video">Pause video</string>
+    <string name="cd_seek_backward">Rewind 10 seconds</string>
+    <string name="cd_seek_forward">Forward 10 seconds</string>
+    <string name="cd_video_empty">No video selected</string>
+    <string name="video_player_no_source">Select a video to preview playback</string>
+    <string name="cd_share_export">Share or export item</string>
+    <string name="cd_delete_item">Delete item</string>
+    <string name="cd_pick_video">Pick video from device</string>
+    <string name="cd_pick_image">Pick image from device</string>
+</resources>
